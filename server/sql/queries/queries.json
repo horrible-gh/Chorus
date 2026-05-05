@@ -1,0 +1,8 @@
+{
+    "get_password": "SELECT password from users WHERE user_id = %s",
+    "get_user": "SELECT u.group_uuid, u.user_uuid, u.user_id, u.user_name, us.storage_uuid, s.storage_name, s.storage_type FROM users u JOIN user_storages us ON u.user_uuid = us.user_uuid JOIN storages s ON s.storage_uuid = us.storage_uuid WHERE u.user_id = %s AND us.is_default = 1",
+    "test": {
+        "test1": "test/test.sql",
+        "test2": "SELECT * FROM test WHERE test_var = %s"
+    }
+}
