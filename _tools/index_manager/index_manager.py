@@ -130,6 +130,98 @@ def write_index(path: Path, lines: list):
 
 # ── 명령 함수들 ────────────────────────────────────────────────────────────────
 
+def scan_existing_ids(project: str, cfg: dict, prefix: str) -> list:
+    """
+    해당 prefix의 모든 기존 ID를 스캔한다.
+    반환값: 발견된 번호 리스트 (정렬됨, 숫자만)
+    """
+    nums = set()
+    
+    # 1. INDEX.md 스캔
+    lines = read_index(cfg["index_path"])
+    info = find_table_in_section(lines, cfg["section"])
+    if info:
+        _, _, data_start, data_end = info
+        rows = get_data_rows(lines, data_start, data_end)
+        for _, cells in rows:
+            if cells:
+                id_str = normalize_id(cells[0])
+                if id_str.startswith(prefix):
+                    num_part = id_str[len(prefix):]
+                    if num_part.isdigit():
+                        nums.add(int(num_part))
+    
+    # 2. 프로젝트 문서 디렉터리 파일명 스캔
+    if project == "chorus":
+        doc_dirs = [
+            Path(r"C:\workspace\projects\Documents\projects\Chorus"),
+            Path(r"C:\workspace\projects\Chorus\_tools\ai_launcher\tasks"),
+            Path(r"C:\workspace\projects\Chorus\_tools\ai_launcher\archive"),
+        ]
+    elif project == "flowgate":
+        doc_dirs = [Path(r"C:\workspace\projects\Documents\projects\FlowGate")]
+    else:
+        doc_dirs = []
+    
+    for doc_dir in doc_dirs:
+        if doc_dir.exists():
+            for file in doc_dir.rglob("*"):
+                if file.is_file():
+                    name = file.name
+                    if name.startswith(prefix):
+                        num_part = name[len(prefix):]
+                        if num_part and num_part[0].isdigit():
+                            match = re.match(r"^(\d+)", num_part)
+                            if match:
+                                nums.add(int(match.group(1)))
+    
+    return sorted(nums)
+
+
+def cmd_reserve(project: str, cfg: dict, prefix: str, title: str):
+    """자동 채번 + INDEX Open 등록"""
+    # 지원되는 prefix 확인
+    valid_prefixes = ["N", "T", "DS", "D", "P", "L", "TR", "NR"]
+    if prefix not in valid_prefixes:
+        print(f"[오류] 지원하지 않는 prefix '{prefix}'. 지원: {', '.join(valid_prefixes)}")
+        sys.exit(1)
+    
+    # 기존 ID 스캔
+    existing = scan_existing_ids(project, cfg, prefix)
+    next_num = (max(existing) + 1) if existing else 1
+    item_id = f"{prefix}{next_num:03d}"
+    
+    # INDEX에 중복 확인
+    lines = read_index(cfg["index_path"])
+    info = find_table_in_section(lines, cfg["section"])
+    if info is None:
+        print(f"[오류] '{cfg['section']}' 섹션의 테이블을 찾을 수 없습니다.")
+        sys.exit(1)
+    
+    _, _, data_start, data_end = info
+    rows = get_data_rows(lines, data_start, data_end)
+    
+    for _, cells in rows:
+        if cells and normalize_id(cells[0]) == item_id:
+            print(f"[오류] ID '{item_id}'는 이미 INDEX에 등록되어 있습니다.")
+            sys.exit(1)
+    
+    # INDEX에 Open 상태로 등록
+    formatted_id = f"`{item_id}`" if cfg["id_backtick"] else item_id
+    
+    if project == "chorus":
+        new_cells = [formatted_id, title, "-", "Open", ""]
+    else:
+        new_cells = [formatted_id, title, "Open", ""]
+    
+    lines.insert(data_end, cells_to_row(new_cells))
+    write_index(cfg["index_path"], lines)
+    
+    # 출력
+    print(f"[예약] {item_id}: {title} → Open")
+    print(item_id)
+
+
 def cmd_open(project: str, cfg: dict, item_id: str, title: str):
     """미등록 항목을 INDEX에 추가 (상태=Open)"""
     lines = read_index(cfg["index_path"])
@@ -331,6 +423,7 @@ def main():
   python index_manager.py --project chorus status
   python index_manager.py --project chorus close T005
   python index_manager.py --project chorus archive
+  python index_manager.py --project chorus reserve T "새 태스크 제목"
   python index_manager.py --project flowgate open T022 "새 태스크 제목"
   python index_manager.py --project flowgate monitoring T013
   python index_manager.py --project flowgate reopen T013
@@ -339,7 +432,7 @@ def main():
     parser.add_argument("--project", required=True, choices=list(PROJECTS.keys()),
                         help="프로젝트 선택")
     parser.add_argument("command",
-                        choices=["open", "monitoring", "close", "archive", "reopen", "status"],
+                        choices=["open", "monitoring", "close", "archive", "reopen", "status", "reserve"],
                         help="실행할 명령")
     parser.add_argument("args", nargs="*", help="명령 인자 (ID, 제목 등)")
 
@@ -352,6 +445,13 @@ def main():
             print("  사용법: python index_manager.py --project <project> open <ID> <제목>")
             sys.exit(1)
         cmd_open(parsed.project, cfg, parsed.args[0], parsed.args[1])
+
+    elif parsed.command == "reserve":
+        if len(parsed.args) < 2:
+            print("[오류] reserve 명령에는 prefix와 제목이 필요합니다.")
+            print("  사용법: python index_manager.py --project <project> reserve <prefix> <제목>")
+            sys.exit(1)
+        cmd_reserve(parsed.project, cfg, parsed.args[0], parsed.args[1])
 
     elif parsed.command == "monitoring":
         if not parsed.args:

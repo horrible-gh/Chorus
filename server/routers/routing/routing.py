@@ -10,7 +10,7 @@ from schemas.routing import (
 
 router = APIRouter()
 
-_NO_MODEL_MSG = "요청 조건에 맞는 활성 모델이 없습니다."
+_NO_MODEL_MSG = "No active model matches the request conditions."
 
 _GRADE_NEXT = {"0급": "0.33급", "0.33급": "1급"}
 
@@ -37,7 +37,7 @@ async def select_route(request: RoutingSelectRequest):
 
 @router.post("/reselect", response_model=RoutingSelectResponse)
 async def reselect_route(request: RoutingReselectRequest):
-    """P002 routing.reselect_model — 이전 실패 사유를 반영해 더 높은 등급으로 재선택한다."""
+    """P002 routing.reselect_model — reselects a higher-grade model based on the previous failure reason."""
     escalated_grade_min = _GRADE_NEXT.get(request.previous_grade or "0급", "1급")
     select_data = {
         "request_id": request.request_id,

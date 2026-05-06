@@ -3,7 +3,7 @@ import sys
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# static/ 상대경로가 reward_tool_plus/ 기준으로 해석되도록 고정
+# Fix static/ relative path to be resolved relative to reward_tool_plus/
 os.chdir(BASE_DIR)
 sys.path.insert(0, BASE_DIR)
 

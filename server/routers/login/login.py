@@ -54,8 +54,8 @@ _MAINTENANCE_SUPPORTED_LANGS = {"en", "ko", "ja"}
 
 
 def _get_maintenance_message(locale: str) -> str:
-    """locale 기준 완성 유지보수 메시지 반환. 미지원 locale은 en fallback.
-    ko_KR, en_US 등 지역 코드 포함 형태도 앞 2자리만 추출해 처리한다."""
+    """Returns the maintenance message for the given locale. Falls back to en for unsupported locales.
+    Also handles region-code variants like ko_KR and en_US by extracting the first 2 characters."""
     lang_code = (locale or "en")[:2].lower()
     lang = lang_code if lang_code in _MAINTENANCE_SUPPORTED_LANGS else "en"
     path = os.path.join(_MAINTENANCE_DIR, f"maintenance_{lang}.txt")
@@ -63,14 +63,14 @@ def _get_maintenance_message(locale: str) -> str:
         with open(path, "r", encoding="utf-8") as f:
             return f.read().strip()
     except Exception as e:
-        logger.error(f"[Maintenance] 메시지 파일 로드 실패: {path} — {e}")
+        logger.error(f"[Maintenance] failed to load message file: {path} — {e}")
         return "Server maintenance in progress."
 
 
 class LoginRequest(BaseModel):
-    username: EmailStr  # 이메일 주소
+    username: EmailStr  # email address
     password: str
-    locale: str = "en"  # REL-010: 클라 locale 수신 — 미전달 시 en fallback
+    locale: str = "en"  # REL-010: client locale — falls back to en if not provided
 
 
 class TotpVerifyRequest(BaseModel):
@@ -82,10 +82,10 @@ class TotpVerifyRequest(BaseModel):
 @router.post("")
 @limiter.limit(settings.RATE_LIMIT_LOGIN)
 async def login(request: Request, body: LoginRequest):
-    # REL-010: maintenance mode — 인증 시도 전 차단, 완성 메시지 반환
+    # REL-010: maintenance mode — block before auth attempt, return maintenance message
     if settings.MAINTENANCE_MODE:
         message = _get_maintenance_message(body.locale)
-        logger.debug(f"[Login] maintenance mode — 로그인 차단, locale={body.locale}")
+        logger.debug(f"[Login] maintenance mode — login blocked, locale={body.locale}")
         return {"maintenance": True, "message": message}
 
     user = authenticate_user(body.username, body.password)
@@ -97,18 +97,18 @@ async def login(request: Request, body: LoginRequest):
 
     user_id = user["user_id"]
 
-    # TOTP 2FA 확인 (tfa가 None이면 건너뛰기)
+    # Check TOTP 2FA (skip if tfa is None)
     totp_enabled = False
     if tfa is not None:
         totp_enabled = tfa.is_enabled(user_id)
-        logger.debug(f"[Login] user_id: {user_id}, TOTP 활성화 여부: {totp_enabled}")
+        logger.debug(f"[Login] user_id: {user_id}, TOTP enabled: {totp_enabled}")
 
         if totp_enabled:
             temp_token = create_access_token(
                 data={"sub": user_id, "totp_pending": True},
                 expires_delta=timedelta(minutes=TOTP_PENDING_EXPIRE_MINUTES),
             )
-            logger.debug(f"[Login] temp_token 발급 - user_id: {user_id}")
+            logger.debug(f"[Login] temp_token issued - user_id: {user_id}")
             return {"totp_required": True, "temp_token": temp_token}
 
     access_token = create_access_token(
@@ -121,7 +121,7 @@ async def login(request: Request, body: LoginRequest):
 
 @router.post("/totp/verify")
 async def verify_totp_login(request: Request, body: TotpVerifyRequest):
-    logger.debug(f"[TOTP Verify] 요청 받음 - temp_token: {body.temp_token[:50]}..., code: {body.code}")
+    logger.debug(f"[TOTP Verify] request received - temp_token: {body.temp_token[:50]}..., code: {body.code}")
 
     credentials_exception = HTTPException(
         status_code=401,
@@ -131,28 +131,28 @@ async def verify_totp_login(request: Request, body: TotpVerifyRequest):
 
     try:
         payload = jwt.decode(body.temp_token, SECRET_KEY, algorithms=[ALGORITHM], options={"verify_exp": True})
-        logger.debug(f"[TOTP Verify] JWT 파싱 성공 - payload: {payload}")
+        logger.debug(f"[TOTP Verify] JWT parsed - payload: {payload}")
     except jwt.ExpiredSignatureError:
-        logger.debug("[TOTP Verify] ❌ JWT 만료됨 (ExpiredSignatureError)")
+        logger.debug("[TOTP Verify] ❌ JWT expired (ExpiredSignatureError)")
         raise HTTPException(status_code=401, detail="token_expired")
     except jwt.InvalidTokenError as e:
-        logger.debug(f"[TOTP Verify] ❌ JWT 파싱 실패 (InvalidTokenError): {e}")
+        logger.debug(f"[TOTP Verify] ❌ JWT parse failed (InvalidTokenError): {e}")
         raise credentials_exception
 
     user_id = payload.get("sub")
     totp_pending = payload.get("totp_pending", False)
-    logger.debug(f"[TOTP Verify] 추출된 user_id: {user_id}, totp_pending: {totp_pending}")
+    logger.debug(f"[TOTP Verify] extracted user_id: {user_id}, totp_pending: {totp_pending}")
 
     if not user_id or not totp_pending:
-        logger.debug(f"[TOTP Verify] ❌ user_id 또는 totp_pending 없음")
+        logger.debug(f"[TOTP Verify] ❌ user_id or totp_pending missing")
         raise credentials_exception
 
-    logger.debug(f"[TOTP Verify] tfa.verify 호출 - user_id: {user_id}, code: {body.code}")
+    logger.debug(f"[TOTP Verify] calling tfa.verify - user_id: {user_id}, code: {body.code}")
     verify_result = tfa.verify(user_id, body.code)
-    logger.debug(f"[TOTP Verify] tfa.verify 결과: {verify_result}")
+    logger.debug(f"[TOTP Verify] tfa.verify result: {verify_result}")
 
     if not verify_result:
-        logger.debug(f"[TOTP Verify] ❌ TOTP 검증 실패 - user_id: {user_id}, code: {body.code}")
+        logger.debug(f"[TOTP Verify] ❌ TOTP verification failed - user_id: {user_id}, code: {body.code}")
         raise HTTPException(status_code=401, detail="invalid_code")
 
     user = sqloader.fetch_one("chorus", "get_user", (user_id,))
@@ -160,5 +160,5 @@ async def verify_totp_login(request: Request, body: TotpVerifyRequest):
         data={"sub": user_id},
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
     )
-    logger.debug(f"[TOTP Verify] ✅ 로그인 성공 - user_id: {user_id}")
+    logger.debug(f"[TOTP Verify] ✅ login succeeded - user_id: {user_id}")
     return {"access_token": access_token, "token_type": "bearer", "user": user}

@@ -3,7 +3,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 class MailUtil:
-    # 이메일 설정
+    # Email configuration
     smtp_server = ""
     smtp_port = 0
     username = ""
@@ -18,14 +18,14 @@ class MailUtil:
 
     @staticmethod
     def send_mail(sender, receiver, subject, body_text, localhost_mode = False):
-        # 이메일 메시지 구성
+        # Compose email message
         msg = MIMEMultipart()
         msg['From'] = sender
         msg['To'] = receiver
         msg['Subject'] = subject
         msg.attach(MIMEText(body_text, 'plain'))
 
-        # SMTP 서버 연결 및 이메일 보내기
+        # Connect to SMTP server and send email
         try:
             server = smtplib.SMTP(MailUtil.smtp_server, MailUtil.smtp_port)
             #server.set_debuglevel(1)  # Enable debug output

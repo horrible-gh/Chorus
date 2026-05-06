@@ -43,13 +43,13 @@ def _get_conn() -> sqlite3.Connection:
                 model_ver   TEXT
             )
         """)
-        # 기존 DB 마이그레이션: model_ver 컬럼 없으면 추가
+        # DB migration: add model_ver column if missing
         try:
             _conn.execute("ALTER TABLE badugi_actions ADD COLUMN model_ver TEXT")
         except sqlite3.OperationalError:
-            pass  # 이미 존재
+            pass  # already exists
 
-        # 라운드 결과 테이블
+        # Round result table
         _conn.execute("""
             CREATE TABLE IF NOT EXISTS badugi_rounds (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,

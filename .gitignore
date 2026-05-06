@@ -85,3 +85,7 @@ target/
 *.swp
 *~
 /.claude/
+
+# Session files
+.sessions.json
+**/.sessions.json

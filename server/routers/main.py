@@ -10,6 +10,7 @@ from .worker import worker
 from . import settings as settings_module
 from . import token as token_module
 from . import files as files_module
+from . import ws as ws_module
 from routers.login.auth import verify_token, token_blacklist
 from config import settings
 from startup import run_all as _bootstrap, start_poll_loop, stop_poll_loop
@@ -55,6 +56,7 @@ app.include_router(worker.router, prefix=f"{CONTEXT}/worker", tags=["ChorusWorke
 app.include_router(settings_module.router, prefix=f"{CONTEXT}/settings", tags=["ChorusSettings"])
 app.include_router(token_module.router, prefix=f"{CONTEXT}/tokens", tags=["ChorusTokens"])
 app.include_router(files_module.router, prefix=f"{CONTEXT}/files", tags=["ChorusFiles"])
+app.include_router(ws_module.router, prefix=f"{CONTEXT}/ws", tags=["ChorusWS"])
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGIN,
@@ -76,13 +78,13 @@ async def read_item(item_id: int, q: str = None):
 
 @app.get(CONTEXT + "/debug-headers")
 async def debug_headers(request: Request):
-    logger.debug(f"🔍 Request Headers: {request.headers}")  # ✅ 모든 헤더 출력
+    logger.debug(f"🔍 Request Headers: {request.headers}")  # ✅ print all headers
     return {"headers": dict(request.headers)}
 
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    logger.debug("💥 Validation error 발생")
-    logger.debug("⛳ 경로:", request.url)
-    logger.debug("📦 내용:\n", exc.errors())
-    logger.debug("📨 원본 body:\n", await request.body())
+    logger.debug("💥 Validation error occurred")
+    logger.debug("⛳ Path:", request.url)
+    logger.debug("📦 Body:\n", exc.errors())
+    logger.debug("📨 Raw body:\n", await request.body())

@@ -29,7 +29,7 @@ class RoutingSelectRequest(BaseModel):
 
 
 class RoutingReselectRequest(BaseModel):
-    """P002 routing.reselect_model — 실행 결과 기반 재라우팅 요청."""
+    """P002 routing.reselect_model — rerouting request based on execution result."""
 
     request_id: str = Field(..., min_length=1)
     action: str = "routing.reselect_model"
@@ -62,7 +62,7 @@ class RoutingDecision(BaseModel):
 
 
 class RoutingErrorDetail(BaseModel):
-    """P002 오류 응답 상세."""
+    """P002 error response detail."""
 
     code: str
     message: str

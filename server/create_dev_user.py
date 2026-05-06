@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""개발용 테스트 유저 생성 스크립트.
+"""Dev test user creation script.
 
-사용법:
+Usage:
     python create_dev_user.py
     python create_dev_user.py --email test@example.com --password secret123
     python create_dev_user.py --count 5
     python create_dev_user.py --list
     python create_dev_user.py --delete test@example.com
 
-기본값:
+Defaults:
     email   : dev{N}@chorus.local  (N = 1, 2, ...)
     password: devpass123
 """
@@ -24,13 +24,13 @@ os.chdir(BASE_DIR)
 sys.path.insert(0, BASE_DIR)
 
 # ──────────────────────────────────────────────
-# .env 로드
+# Load .env
 # ──────────────────────────────────────────────
 try:
     from dotenv import load_dotenv
     load_dotenv(os.path.join(BASE_DIR, ".env"))
 except ImportError:
-    # python-dotenv가 없으면 수동 파싱
+    # Manual parsing if python-dotenv is not installed
     env_path = os.path.join(BASE_DIR, ".env")
     if os.path.exists(env_path):
         with open(env_path, encoding="utf-8") as f:
@@ -46,7 +46,7 @@ SECRET_KEY = os.environ.get("SECRET_KEY", "")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 
 # ──────────────────────────────────────────────
-# 의존성 임포트 (서버와 동일한 라이브러리 사용)
+# Import dependencies (using same libraries as the server)
 # ──────────────────────────────────────────────
 try:
     from passlib.context import CryptContext
@@ -65,11 +65,11 @@ try:
         return pyjwt.encode({"sub": user_id, "exp": expire}, SECRET_KEY, algorithm="HS256")
 except ImportError:
     def make_token(user_id: str) -> str:  # type: ignore[misc]
-        return "(pyjwt 미설치 — JWT 생성 불가)"
+        return "(pyjwt not installed — cannot generate JWT)"
 
 
 # ──────────────────────────────────────────────
-# SQLite 전용 헬퍼
+# SQLite-only helper
 # ──────────────────────────────────────────────
 USERS_DDL = """
 CREATE TABLE IF NOT EXISTS users (
@@ -122,10 +122,10 @@ def delete_user(conn: sqlite3.Connection, user_id: str) -> bool:
 
 
 # ──────────────────────────────────────────────
-# 출력 헬퍼
+# Output helper
 # ──────────────────────────────────────────────
 def print_user(info: dict, idx: int = 1) -> None:
-    print(f"\n  [{idx}] 유저 생성 완료")
+    print(f"\n  [{idx}] user created")
     print(f"      email   : {info['user_id']}")
     print(f"      password: {info['password']}")
     print(f"      token   : {info['token']}")
@@ -136,17 +136,17 @@ def print_user(info: dict, idx: int = 1) -> None:
 # ──────────────────────────────────────────────
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="개발용 테스트 유저 생성",
+        description="Dev test user creation",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    p.add_argument("--email",    help="생성할 유저의 이메일 (기본: dev1@chorus.local)")
-    p.add_argument("--password", default="devpass123", help="비밀번호 (기본: devpass123)")
+    p.add_argument("--email",    help="Email address to create (default: dev1@chorus.local)")
+    p.add_argument("--password", default="devpass123", help="Password (default: devpass123)")
     p.add_argument("--count",    type=int, default=1, metavar="N",
-                   help="생성할 유저 수 — --email 미지정 시 dev1~devN 자동 생성")
-    p.add_argument("--list",     action="store_true", help="등록된 유저 목록 출력")
-    p.add_argument("--delete",   metavar="EMAIL", help="지정한 유저 삭제")
-    p.add_argument("--token",    metavar="EMAIL", help="기존 유저의 JWT 토큰 재발급")
+                   help="Number of users to create — auto-generates dev1~devN if --email is not set")
+    p.add_argument("--list",     action="store_true", help="Print list of registered users")
+    p.add_argument("--delete",   metavar="EMAIL", help="Delete the specified user")
+    p.add_argument("--token",    metavar="EMAIL", help="Re-issue JWT token for an existing user")
     return p
 
 
@@ -154,20 +154,20 @@ def main() -> None:
     args = build_parser().parse_args()
 
     if DB_TYPE not in ("sqlite", "sqlite3", "local"):
-        print(f"[!] 이 스크립트는 SQLite DB에서만 동작합니다. (현재 DB_TYPE={DB_TYPE})")
-        print("    MySQL/PostgreSQL 환경에서는 서버 Register API를 사용해 주세요.")
+        print(f"[!] This script only works with SQLite DB. (current DB_TYPE={DB_TYPE})")
+        print("    For MySQL/PostgreSQL, please use the server Register API.")
         sys.exit(1)
 
     conn = get_conn()
     ensure_users_table(conn)
 
-    # ── 목록
+    # ── List
     if args.list:
         users = list_users(conn)
         if not users:
-            print("등록된 유저가 없습니다.")
+            print("No registered users.")
         else:
-            print(f"{'이메일':<35} {'인증':<6} {'생성일'}")
+            print(f"{'Email':<35} {'Verified':<8} {'Created at'}")
             print("-" * 70)
             for u in users:
                 verified = "✅" if u["email_verified"] else "❌"
@@ -175,40 +175,40 @@ def main() -> None:
         conn.close()
         return
 
-    # ── 삭제
+    # ── Delete
     if args.delete:
         if delete_user(conn, args.delete):
-            print(f"✅ 유저 삭제 완료: {args.delete}")
+            print(f"✅ User deleted: {args.delete}")
         else:
-            print(f"[!] 유저를 찾을 수 없습니다: {args.delete}")
+            print(f"[!] User not found: {args.delete}")
         conn.close()
         return
 
-    # ── 토큰 재발급
+    # ── Re-issue token
     if args.token:
         if user_exists(conn, args.token):
             token = make_token(args.token)
             print(f"\n  email : {args.token}")
             print(f"  token : {token}")
         else:
-            print(f"[!] 유저를 찾을 수 없습니다: {args.token}")
+            print(f"[!] User not found: {args.token}")
         conn.close()
         return
 
-    # ── 생성
+    # ── Create
     emails: list[str] = []
     if args.email:
         emails = [args.email]
     else:
         emails = [f"dev{i}@chorus.local" for i in range(1, args.count + 1)]
 
-    print(f"\n🚀 개발용 테스트 유저 생성 (DB: {DB_PATH})")
+    print(f"\n🚀 Creating dev test users (DB: {DB_PATH})")
     created, skipped = [], []
 
     for idx, email in enumerate(emails, start=1):
         if user_exists(conn, email):
             skipped.append(email)
-            print(f"  [skip] 이미 존재하는 유저: {email}")
+            print(f"  [skip] user already exists: {email}")
             continue
         info = create_user(conn, email, args.password)
         created.append(info)
@@ -216,9 +216,9 @@ def main() -> None:
 
     conn.close()
 
-    print(f"\n완료: {len(created)}개 생성, {len(skipped)}개 스킵")
+    print(f"\nDone: {len(created)} created, {len(skipped)} skipped")
     if not SECRET_KEY:
-        print("\n⚠️  .env에 SECRET_KEY가 설정되지 않았습니다. 토큰이 유효하지 않을 수 있습니다.")
+        print("\n⚠️  SECRET_KEY is not set in .env. Tokens may be invalid.")
 
 
 if __name__ == "__main__":

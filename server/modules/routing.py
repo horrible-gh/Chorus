@@ -57,20 +57,20 @@ def _risk_score(intent: str, request: dict) -> int:
 
 def _select_grade(intent: str, complexity_score: int, risk_score: int, request: dict) -> tuple[Optional[str], str, str, bool]:
     if intent == "code_change" and not request.get("can_modify_code", False):
-        return None, "FORBIDDEN_CODE_CHANGE", "코드 수정 권한이 없는 요청이므로 실행을 차단했습니다.", False
+        return None, "FORBIDDEN_CODE_CHANGE", "Request blocked: no permission to modify code.", False
     if intent in ("policy_decision", "status_decision", "test_expected_value"):
-        return "1급", "POLICY_DECISION_REQUIRES_HIGHER_GRADE", "정책 또는 상태 판단 요청이므로 1급 모델로 올렸습니다.", False
+        return "1급", "POLICY_DECISION_REQUIRES_HIGHER_GRADE", "Policy or status decision request: escalated to Medium-grade model.", False
     if request.get("previous_failure_code") in ("OUTPUT_OUT_OF_SCOPE", "HALLUCINATED_DECISION", "MISSING_REQUIRED_OUTPUT"):
-        return "1급", "LOW_GRADE_OUTPUT_INVALID", "이전 출력이 허용 범위를 벗어나 상위 모델 검토로 전환했습니다.", False
+        return "1급", "LOW_GRADE_OUTPUT_INVALID", "Previous output out of scope: switched to higher-grade model for review.", False
     if intent == "document_draft" and risk_score < 70 and int(request.get("write_paths_count") or 0) <= 1 and not request.get("can_modify_code", False):
-        return "0급", "ZERO_GRADE_DRAFT_ALLOWED", "입력과 출력이 고정된 문서 초안 작업이므로 0급 워커 실행을 허용했습니다.", True
+        return "0급", "ZERO_GRADE_DRAFT_ALLOWED", "Fixed-input document draft task: ExLow-grade worker allowed.", True
     if risk_score >= 70:
-        return "1급", "HIGH_RISK_REQUEST", "고위험 요청이므로 1급 모델을 선택했습니다.", False
+        return "1급", "HIGH_RISK_REQUEST", "High-risk request: selected Medium-grade model.", False
     if complexity_score <= 30:
-        return "0급", "LOW_RISK_DRAFT", "낮은 복잡도의 초안 또는 정리 요청이라 낮은 등급 모델을 우선 선택했습니다.", True
+        return "0급", "LOW_RISK_DRAFT", "Low-complexity draft or cleanup request: preferred ExLow-grade model.", True
     if complexity_score <= 65:
-        return "0.33급", "MID_COMPLEXITY_REQUEST", "중간 복잡도 요청이므로 0.33급 모델을 선택했습니다.", True
-    return "1급", "DEFAULT_HIGHER_GRADE", "분류가 어렵거나 복잡도가 높아 1급 모델을 선택했습니다.", False
+        return "0.33급", "MID_COMPLEXITY_REQUEST", "Mid-complexity request: selected Low-grade model.", True
+    return "1급", "DEFAULT_HIGHER_GRADE", "Hard-to-classify or high-complexity request: selected Medium-grade model.", False
 
 
 def _pick_model(grade: str, preferred_runner: Optional[str], allowed_grade_max: str) -> Optional[dict]:
