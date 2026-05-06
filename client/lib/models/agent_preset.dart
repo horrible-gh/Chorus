@@ -285,6 +285,34 @@ AgentModelOption? agentModelFor(String runner, String modelName) {
   return null;
 }
 
+String publicGradeLabel(String grade) {
+  // Normalize common formats: allow comma decimal and remove surrounding text like '급'
+  if (grade.isEmpty) return grade;
+  final normalized = grade.replaceAll(',', '.');
+  // Try to extract a numeric portion
+  final numMatch = RegExp(r'[-+]?\d*\.?\d+').firstMatch(normalized);
+  if (numMatch != null) {
+    final value = double.tryParse(numMatch.group(0)!);
+    if (value != null) {
+      if (value == 0.0) return 'ExLow';
+      if ((value - 0.33).abs() < 0.001) return 'Low';
+      if ((value - 1.0).abs() < 0.001) return 'Medium';
+      if (value >= 3.0 && value <= 7.5) return 'High';
+      if (value >= 15.0) return 'ExHigh';
+    }
+  }
+
+  // Fallback checks for common literal forms
+  final s = grade.replaceAll('급', '').trim();
+  if (s == '0' || grade == '0급') return 'ExLow';
+  if (grade.contains('0.33') || grade.contains('0,33')) return 'Low';
+  if (grade.contains('1급') || s == '1') return 'Medium';
+  if (grade.contains('15')) return 'ExHigh';
+
+  // Unknown: return original (safe fallback) per task rules
+  return grade;
+}
+
 String _string(Object? value, {String fallback = ''}) {
   final text = value?.toString();
   if (text == null || text.isEmpty) {

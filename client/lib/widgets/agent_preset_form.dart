@@ -164,7 +164,7 @@ class _AgentPresetFormState extends State<AgentPresetForm> {
                 ),
                 TextFormField(
                   enabled: false,
-                  initialValue: _grade,
+                  initialValue: publicGradeLabel(_grade),
                   key: ValueKey(_grade),
                   decoration: const InputDecoration(
                     labelText: 'Grade',
