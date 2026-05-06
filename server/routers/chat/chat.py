@@ -42,6 +42,12 @@ async def get_room(room_id: str):
     }
 
 
+@router.delete("/rooms/{room_id}")
+async def delete_room(room_id: str):
+    chat_manager.delete_room(room_id)
+    return {"ok": True}
+
+
 @router.post("/rooms/{room_id}/participants", response_model=dict)
 async def invite_agent(room_id: str, request: ParticipantInvite):
     participant = chat_manager.invite_agent(room_id, request.agent_id, request.invited_by_user_id)

@@ -1,4 +1,4 @@
-"""서버 초기화 헬퍼 — main.py 에서 분리된 부트스트랩 로직."""
+"""Server initialization helper — bootstrap logic extracted from main.py."""
 import asyncio
 import sys
 import io
@@ -28,15 +28,18 @@ def run_all():
 
 
 async def start_poll_loop() -> None:
-    """백그라운드 폴링 루프를 asyncio 태스크로 등록한다."""
+    """Registers the background polling loop as an asyncio task."""
     global _poll_task
-    from modules.worker_loop import poll_loop
+    from modules.worker_loop import poll_loop, _POLL_WORKER_ID
+    from modules.chat_manager import STORE
+    STORE.delete_leases_by_worker(_POLL_WORKER_ID)
+    logger.info(f"[startup] stale lease cleanup done — worker_id={_POLL_WORKER_ID!r}")
     _poll_task = asyncio.create_task(poll_loop())
-    logger.info("[startup] poll_loop 태스크 등록 완료")
+    logger.info("[startup] poll_loop task registered")
 
 
 async def stop_poll_loop() -> None:
-    """폴링 루프를 graceful하게 중단한다."""
+    """Gracefully stops the polling loop."""
     global _poll_task
     if _poll_task and not _poll_task.done():
         _poll_task.cancel()
@@ -44,4 +47,4 @@ async def stop_poll_loop() -> None:
             await _poll_task
         except asyncio.CancelledError:
             pass
-        logger.info("[startup] poll_loop 태스크 종료 완료")
+        logger.info("[startup] poll_loop task stopped")

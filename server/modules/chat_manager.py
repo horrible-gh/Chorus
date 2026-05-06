@@ -258,6 +258,12 @@ class ChorusStore:
             return self._fetch_all(self._sql("list_rooms_by_owner"), [owner_user_id])
         return self._fetch_all(self._sql("list_rooms"))
 
+    def delete_room(self, room_id: str) -> None:
+        self._execute(
+            "UPDATE chat_rooms SET status = 'deleted' WHERE room_id = ?",
+            [room_id],
+        )
+
     # ── chat_participants ─────────────────────────────────────────────────
 
     def insert_participant(self, participant: dict) -> dict:
@@ -348,6 +354,10 @@ class ChorusStore:
                 message.get("token_estimate"),
                 message["created_at"],
             ],
+        )
+        self._execute(
+            "UPDATE chat_rooms SET updated_at = ? WHERE room_id = ?",
+            [message["created_at"], message["room_id"]],
         )
         return self.get_message(message["message_id"])
 
@@ -548,6 +558,14 @@ class ChorusStore:
             values.append(lease_id)
             self._execute(f"UPDATE worker_leases SET {', '.join(sets)} WHERE lease_id = ?", values)
         return self.get_lease(lease_id)
+
+    def delete_leases_by_worker(self, worker_id: str) -> int:
+        """Bulk-deletes stale leases left by a specific worker on server restart."""
+        self._execute(
+            "DELETE FROM worker_leases WHERE worker_id = ?",
+            [worker_id],
+        )
+        return 0
 
     # ── worker_runs ───────────────────────────────────────────────────────
 
@@ -764,6 +782,10 @@ def list_rooms(owner_user_id: Optional[str] = None) -> List[dict]:
     return STORE.list_rooms(owner_user_id)
 
 
+def delete_room(room_id: str) -> None:
+    STORE.delete_room(room_id)
+
+
 def _invite_agent_unlocked(room_id: str, agent_id: str, actor_user_id: str) -> dict:
     agent = get_agent(agent_id)
     if agent["status"] != "active":
@@ -797,7 +819,7 @@ def _invite_agent_unlocked(room_id: str, agent_id: str, actor_user_id: str) -> d
             "actor_user_id": actor_user_id,
             "actor_agent_id": None,
             "payload_json": {"agent_id": agent_id},
-            "text": f"{agent['display_name']}가 초대되었습니다.",
+            "text": f"{agent['display_name']} has been invited.",
             "created_at": now_iso(),
         }
     )
@@ -827,7 +849,7 @@ def remove_agent(room_id: str, agent_id: str, actor_user_id: str) -> dict:
                         "actor_user_id": actor_user_id,
                         "actor_agent_id": None,
                         "payload_json": {"agent_id": agent_id},
-                        "text": f"{participant['display_name']}가 제거되었습니다.",
+                        "text": f"{participant['display_name']} has been removed.",
                         "created_at": now_iso(),
                     }
                 )
@@ -836,7 +858,7 @@ def remove_agent(room_id: str, agent_id: str, actor_user_id: str) -> dict:
 
 
 def send_message(room_id: str, payload: dict) -> tuple[dict, List[dict]]:
-    logger.debug(f"[send_message] 진입 — room_id={room_id!r} delivery_mode={payload.get('delivery_mode')!r} visibility={payload.get('visibility')!r}")
+    logger.debug(f"[send_message] enter — room_id={room_id!r} delivery_mode={payload.get('delivery_mode')!r} visibility={payload.get('visibility')!r}")
     from modules.worker_loop import create_agent_response_task
 
     with STORE.transaction():

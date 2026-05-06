@@ -138,6 +138,10 @@ class ChatService {
     return ChatParticipant.fromJson(_map(response.data?['participant']));
   }
 
+  Future<void> deleteRoom(String roomId) async {
+    await _dio.delete<void>('/chat/rooms/$roomId');
+  }
+
   ChatRoomDetails _roomDetails(Map<String, dynamic>? data) {
     final payload = data ?? const <String, dynamic>{};
     final participants = _list(payload['participants'])

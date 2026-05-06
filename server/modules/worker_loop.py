@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 from datetime import datetime, timedelta
 from typing import List, Optional
 
@@ -18,12 +19,39 @@ POLL_INTERVAL_SECONDS = 3
 _POLL_WORKER_ID = "server-poll-worker"
 
 
+def _publish_message_completed(task_id: str, task: dict) -> None:
+    """Publishes the message_completed event after AI task completion and message storage."""
+    room_id = task.get("input_json", {}).get("room_id")
+    if not room_id:
+        logger.warning(
+            f"[_publish_message_completed] room_id not found in input_json for task {task_id!r}, skip publish"
+        )
+        return
+    from modules.push_manager import push_manager
+    payload = {
+        "type": "message_completed",
+        "room_id": room_id,
+        "task_id": task_id,
+        "timestamp": now_iso(),
+    }
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(push_manager.publish(room_id, payload))
+        logger.info(
+            f"[_publish_message_completed] scheduled publish room_id={room_id!r} task_id={task_id!r}"
+        )
+    except RuntimeError:
+        logger.warning(
+            f"[_publish_message_completed] no running event loop, cannot publish for task {task_id!r}"
+        )
+
+
 def _task_response(task: dict) -> dict:
     return task
 
 
 def create_task(payload: dict, route: bool = True) -> dict:
-    logger.debug(f"[create_task] 진입 — title={payload.get('title')!r} task_type={payload.get('task_type')!r} assigned_agent_id={payload.get('assigned_agent_id')!r}")
+    logger.debug(f"[create_task] enter — title={payload.get('title')!r} task_type={payload.get('task_type')!r} assigned_agent_id={payload.get('assigned_agent_id')!r}")
     with STORE.transaction():
         if payload.get("assigned_agent_id"):
             get_agent(payload["assigned_agent_id"])
@@ -98,7 +126,7 @@ def create_task(payload: dict, route: bool = True) -> dict:
 
 
 def create_agent_response_task(room_id: str, message: dict, agent_id: str, context_messages: Optional[list] = None) -> dict:
-    logger.debug(f"[create_agent_response_task] 진입 — room_id={room_id!r} message_id={message.get('message_id')!r} agent_id={agent_id!r}")
+    logger.debug(f"[create_agent_response_task] enter — room_id={room_id!r} message_id={message.get('message_id')!r} agent_id={agent_id!r}")
     task_input: dict = {"room_id": room_id, "message_id": message["message_id"], "instruction": message["text"]}
     if context_messages:
         task_input["context_messages"] = context_messages
@@ -127,7 +155,7 @@ def get_task(task_id: str) -> dict:
 
 
 def acquire_lease(task_id: str, payload: dict) -> tuple[dict, dict]:
-    logger.debug(f"[acquire_lease] 진입 — task_id={task_id!r} worker_id={payload.get('worker_id')!r} job_id={payload.get('job_id')!r}")
+    logger.debug(f"[acquire_lease] enter — task_id={task_id!r} worker_id={payload.get('worker_id')!r} job_id={payload.get('job_id')!r}")
     with STORE.transaction():
         task = get_task(task_id)
         if task["status"] not in ("queued", "retry_scheduled"):
@@ -182,7 +210,7 @@ def _active_lease(task_id: str, lease_id: str, worker_id: str) -> dict:
 
 
 def update_progress(task_id: str, payload: dict) -> dict:
-    logger.debug(f"[update_progress] 진입 — task_id={task_id!r} message={payload.get('message')!r}")
+    logger.debug(f"[update_progress] enter — task_id={task_id!r} message={payload.get('message')!r}")
     with STORE.transaction():
         get_task(task_id)
         lease = _active_lease(task_id, payload["lease_id"], payload["worker_id"])
@@ -203,7 +231,7 @@ def update_progress(task_id: str, payload: dict) -> dict:
 
 
 def complete_task(task_id: str, payload: dict) -> tuple[dict, dict]:
-    logger.debug(f"[complete_task] 진입 — task_id={task_id!r} worker_id={payload.get('worker_id')!r}")
+    logger.debug(f"[complete_task] enter — task_id={task_id!r} worker_id={payload.get('worker_id')!r}")
     with STORE.transaction():
         task = get_task(task_id)
         lease = _active_lease(task_id, payload["lease_id"], payload["worker_id"])
@@ -214,7 +242,7 @@ def complete_task(task_id: str, payload: dict) -> tuple[dict, dict]:
                     "worker_id": payload["worker_id"],
                     "lease_id": payload["lease_id"],
                     "code": "OUTPUT_LIMIT_EXCEEDED",
-                    "message": "0급 워커는 산출물 경로를 하나만 반환할 수 있습니다.",
+                    "message": "ExLow-grade worker can return only one artifact path.",
                     "retryable": False,
                 },
             )
@@ -259,6 +287,8 @@ def complete_task(task_id: str, payload: dict) -> tuple[dict, dict]:
                 msg = persist_agent_response_message(task, result_json)
                 if msg is None:
                     logger.error(f"[complete_task] persist_agent_response_message returned None for task {task_id}")
+                else:
+                    _publish_message_completed(task_id, task)
             except Exception as e:
                 logger.error(f"[complete_task] persist_agent_response_message raised an exception for task {task_id}: {e}")
         
@@ -266,7 +296,7 @@ def complete_task(task_id: str, payload: dict) -> tuple[dict, dict]:
 
 
 def fail_task(task_id: str, payload: dict) -> tuple[dict, dict]:
-    logger.debug(f"[fail_task] 진입 — task_id={task_id!r} worker_id={payload.get('worker_id')!r} code={payload.get('code')!r}")
+    logger.debug(f"[fail_task] enter — task_id={task_id!r} worker_id={payload.get('worker_id')!r} code={payload.get('code')!r}")
     with STORE.transaction():
         task = get_task(task_id)
         lease = None
@@ -311,11 +341,11 @@ def fail_task(task_id: str, payload: dict) -> tuple[dict, dict]:
         return task, run
 
 
-# ── 폴링 루프 ────────────────────────────────────────────────────────────────
+# ── Polling loop ─────────────────────────────────────────────────────────────
 
 
 async def _dispatch_pending_tasks() -> None:
-    """실행 가능한 agent_response 태스크를 조회하고 순차 처리한다."""
+    """Fetches runnable agent_response tasks and processes them sequentially."""
     from modules.chat_manager import _call_ai_sync, _build_chat_history
 
     now = datetime.now(JST)
@@ -332,17 +362,17 @@ async def _dispatch_pending_tasks() -> None:
 
     for task in runnable:
         task_id = task["task_id"]
-        logger.debug(f"[poll_loop] 태스크 처리 시작 — task_id={task_id!r}")
+        logger.debug(f"[poll_loop] task dispatch start — task_id={task_id!r}")
 
-        job_id = STORE.next_id("job")
+        job_id = f"job_{uuid.uuid4().hex[:12]}"
         try:
             lease, task = acquire_lease(task_id, {"worker_id": _POLL_WORKER_ID, "job_id": job_id})
         except Exception as e:
-            logger.debug(f"[poll_loop] lease 획득 실패 — task_id={task_id!r}: {e}")
+            logger.debug(f"[poll_loop] lease acquire failed — task_id={task_id!r}: {e}")
             continue
 
         lease_id = lease["lease_id"]
-        logger.debug(f"[poll_loop] lease 획득 성공 — task_id={task_id!r} lease_id={lease_id!r}")
+        logger.debug(f"[poll_loop] lease acquired — task_id={task_id!r} lease_id={lease_id!r}")
 
         agent_id = task.get("assigned_agent_id")
         agent = STORE.get_agent(agent_id) if agent_id else None
@@ -357,7 +387,7 @@ async def _dispatch_pending_tasks() -> None:
         runner = task.get("assigned_runner") or "copilot"
         model = task.get("assigned_model") or "claude-sonnet-4-5"
 
-        logger.debug(f"[poll_loop] AI 호출 시작 — task_id={task_id!r} runner={runner!r} model={model!r}")
+        logger.debug(f"[poll_loop] AI call start — task_id={task_id!r} runner={runner!r} model={model!r}")
         try:
             ai_text = await asyncio.to_thread(
                 _call_ai_sync,
@@ -368,16 +398,16 @@ async def _dispatch_pending_tasks() -> None:
                 user_text=instruction,
                 pinned_context=agent.get("pinned_context") if agent else None,
             )
-            logger.debug(f"[poll_loop] AI 호출 성공 — task_id={task_id!r}")
+            logger.debug(f"[poll_loop] AI call succeeded — task_id={task_id!r}")
             complete_task(task_id, {
                 "worker_id": _POLL_WORKER_ID,
                 "lease_id": lease_id,
                 "summary": ai_text,
                 "artifact_paths": [],
             })
-            logger.info(f"[poll_loop] 태스크 완료 — task_id={task_id!r}")
+            logger.info(f"[poll_loop] task completed — task_id={task_id!r}")
         except Exception as e:
-            logger.error(f"[poll_loop] AI 호출 실패 — task_id={task_id!r}: {e}")
+            logger.error(f"[poll_loop] AI call failed — task_id={task_id!r}: {e}")
             try:
                 fail_task(task_id, {
                     "worker_id": _POLL_WORKER_ID,
@@ -387,18 +417,18 @@ async def _dispatch_pending_tasks() -> None:
                     "retryable": True,
                 })
             except Exception as fe:
-                logger.error(f"[poll_loop] fail_task 호출 실패 — task_id={task_id!r}: {fe}")
+                logger.error(f"[poll_loop] fail_task call failed — task_id={task_id!r}: {fe}")
 
 
 async def poll_loop() -> None:
-    """서버 백그라운드 폴링 루프 — 큐잉된 agent_response 태스크를 주기적으로 처리한다."""
-    logger.info("[poll_loop] 폴링 루프 시작")
+    """Server background polling loop — periodically processes queued agent_response tasks."""
+    logger.info("[poll_loop] polling loop started")
     try:
         while True:
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
             try:
                 await _dispatch_pending_tasks()
             except Exception as e:
-                logger.error(f"[poll_loop] 폴링 중 예외 발생: {e}")
+                logger.error(f"[poll_loop] exception during polling: {e}")
     except asyncio.CancelledError:
-        logger.info("[poll_loop] 폴링 루프 종료 (CancelledError)")
+        logger.info("[poll_loop] polling loop stopped (CancelledError)")
