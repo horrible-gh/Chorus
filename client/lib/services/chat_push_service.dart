@@ -40,6 +40,7 @@ class ChatPushService extends ChangeNotifier {
   int _retryCount = 0;
   Duration _currentDelay = _kReconnectInitialDelay;
   Timer? _reconnectTimer;
+  Timer? _fallbackReconnectTimer;
 
   String? _lastProcessedTaskId;
   DateTime? _lastTaskProcessedAt;
@@ -56,6 +57,7 @@ class ChatPushService extends ChangeNotifier {
   static const int _kReconnectMultiplier = 2;
   static const Duration _kReconnectMaxDelay = Duration(seconds: 30);
   static const Duration _kDebounceWindow = Duration(seconds: 5);
+  static const Duration _kFallbackReconnectInterval = Duration(seconds: 10);
 
   /// Starts a WebSocket subscription for the given room_id.
   ///
@@ -68,6 +70,7 @@ class ChatPushService extends ChangeNotifier {
       return;
     }
     _cancelReconnectTimer();
+    _cancelFallbackReconnectTimer();
     _closeCurrentConnection();
     _currentRoomId = roomId;
     _currentToken = token;
@@ -79,6 +82,7 @@ class ChatPushService extends ChangeNotifier {
   /// Terminates the current WebSocket subscription and transitions to push_idle state.
   void disconnect() {
     _cancelReconnectTimer();
+    _cancelFallbackReconnectTimer();
     _closeCurrentConnection();
     _currentRoomId = null;
     _currentToken = null;
@@ -146,6 +150,7 @@ class ChatPushService extends ChangeNotifier {
       final type = json['type'] as String?;
       switch (type) {
         case 'subscribe_success':
+          _cancelFallbackReconnectTimer();
           _setStatus(ChatPushStatus.pushConnected);
           _retryCount = 0;
           _currentDelay = _kReconnectInitialDelay;
@@ -243,13 +248,36 @@ class ChatPushService extends ChangeNotifier {
   }
 
   void _transitionToFallback() {
+    _cancelFallbackReconnectTimer();
     _setStatus(ChatPushStatus.pushFailed);
     _setStatus(ChatPushStatus.pushFallback);
+    _scheduleFallbackReconnect();
   }
 
   void _cancelReconnectTimer() {
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
+  }
+
+  void _scheduleFallbackReconnect() {
+    if (_currentRoomId == null || _currentToken == null) {
+      return;
+    }
+    _fallbackReconnectTimer = Timer.periodic(_kFallbackReconnectInterval, (_) {
+      if (_status == ChatPushStatus.pushFallback &&
+          _currentRoomId != null &&
+          _currentToken != null) {
+        debugPrint(
+          '[ChatPushService] attempting fallback reconnect room=${_currentRoomId ?? "none"}',
+        );
+        _connectInternal(_currentRoomId!, _currentToken!);
+      }
+    });
+  }
+
+  void _cancelFallbackReconnectTimer() {
+    _fallbackReconnectTimer?.cancel();
+    _fallbackReconnectTimer = null;
   }
 
   void _closeCurrentConnection() {
@@ -269,6 +297,7 @@ class ChatPushService extends ChangeNotifier {
   @override
   void dispose() {
     _cancelReconnectTimer();
+    _cancelFallbackReconnectTimer();
     _closeCurrentConnection();
     super.dispose();
   }
