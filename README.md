@@ -80,7 +80,7 @@ A real-time chat and task management platform built with Flutter and FastAPI, en
 
 2. **Run the client**:
    ```powershell
-   flutter run -d chrome --dart-define=CHORUS_API_BASE_URL=http://localhost:8000/horriblecards
+   flutter run -d chrome --dart-define=CHORUS_API_BASE_URL=http://localhost:8000/chorus
    ```
 
    For other platforms:
