@@ -12,7 +12,7 @@ from . import token as token_module
 from . import files as files_module
 from routers.login.auth import verify_token, token_blacklist
 from config import settings
-from startup import run_all as _bootstrap
+from startup import run_all as _bootstrap, start_poll_loop, stop_poll_loop
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -33,8 +33,9 @@ limiter = Limiter(
 async def lifespan(app: FastAPI):
     """서버 시작/종료 시 실행되는 lifespan 핸들러."""
     _bootstrap()          # 콘솔 인코딩 + PercentileTable 프리빌드
+    await start_poll_loop()
     yield                  # ← 서버 가동 중
-    # shutdown 로직 필요 시 여기에 추가
+    await stop_poll_loop()
 
 
 app = FastAPI(lifespan=lifespan)

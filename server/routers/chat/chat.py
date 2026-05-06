@@ -57,12 +57,35 @@ async def remove_agent(room_id: str, agent_id: str, request: ParticipantRemove):
 @router.post("/rooms/{room_id}/messages", response_model=MessageSendResponse)
 async def send_message(room_id: str, request: MessageSend):
     """
-    P001 message.send — public message + single agent synchronous AI response (T012).
+    P001 message.send — route to sync (single agent) or async (multi-agent / whisper).
 
-    Scope: visibility='room', delivery_mode='append_history', single active agent.
-    AI call is performed synchronously before returning. See Q005 for AI API confirmation.
+    Async path (send_message) is used when:
+      - visibility == 'whisper'
+      - recipient_agent_ids is non-empty
+      - delivery_mode != 'append_history'
+      - room message with 2+ active agents (T024)
+    Otherwise the synchronous single-agent path (send_message_sync) is used.
     """
-    message, tasks = chat_manager.send_message_sync(room_id, request.model_dump())
+    use_async = (
+        request.visibility == "whisper"
+        or bool(request.recipient_agent_ids)
+        or request.delivery_mode != "append_history"
+    )
+
+    if not use_async and request.visibility == "room":
+        active_agents = [
+            p
+            for p in chat_manager._room_participants(room_id, active_only=True)
+            if p["participant_type"] == "agent"
+        ]
+        if len(active_agents) >= 2:
+            use_async = True
+
+    if use_async:
+        message, tasks = chat_manager.send_message(room_id, request.model_dump())
+    else:
+        message, tasks = chat_manager.send_message_sync(room_id, request.model_dump())
+
     return {"request_id": request.request_id, "ok": True, "message": message, "created_tasks": tasks}
 
 

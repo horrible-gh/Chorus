@@ -189,7 +189,7 @@ class ChatProvider extends ChangeNotifier {
       }
       notifyListeners();
       if (result.createdTasks.isNotEmpty) {
-        unawaited(_pollAgentResponses(roomId, _messages.length));
+        unawaited(_pollAgentResponses(roomId, _messages.length, result.createdTasks.length));
       }
       return result;
     } catch (error, stackTrace) {
@@ -202,7 +202,7 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> _pollAgentResponses(String roomId, int countAfterSend) async {
+  Future<void> _pollAgentResponses(String roomId, int countAfterSend, [int expectedCount = 1]) async {
     for (var i = 0; i < 8; i++) {
       await Future.delayed(const Duration(seconds: 2));
       if (!_hasPendingTasks) return;
@@ -217,7 +217,8 @@ class ChatProvider extends ChangeNotifier {
           viewerUserId: userId,
         );
         _messages = messages;
-        if (messages.length > countAfterSend) {
+        final newCount = messages.length - countAfterSend;
+        if (newCount >= (expectedCount > 0 ? expectedCount : 1)) {
           _hasPendingTasks = false;
         }
         notifyListeners();

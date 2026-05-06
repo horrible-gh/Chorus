@@ -1,8 +1,10 @@
+import asyncio
 from datetime import datetime, timedelta
 from typing import List, Optional
 
 from fastapi import HTTPException
 
+import LogAssist.log as logger
 from modules.chat_manager import JST, STORE, get_agent, now_iso
 from modules.routing import select_model
 
@@ -12,12 +14,16 @@ MAX_ATTEMPTS_NORMAL = 3
 BASE_BACKOFF_SECONDS = 60
 MAX_BACKOFF_SECONDS = 900
 
+POLL_INTERVAL_SECONDS = 3
+_POLL_WORKER_ID = "server-poll-worker"
+
 
 def _task_response(task: dict) -> dict:
     return task
 
 
 def create_task(payload: dict, route: bool = True) -> dict:
+    logger.debug(f"[create_task] 진입 — title={payload.get('title')!r} task_type={payload.get('task_type')!r} assigned_agent_id={payload.get('assigned_agent_id')!r}")
     with STORE.transaction():
         if payload.get("assigned_agent_id"):
             get_agent(payload["assigned_agent_id"])
@@ -92,6 +98,7 @@ def create_task(payload: dict, route: bool = True) -> dict:
 
 
 def create_agent_response_task(room_id: str, message: dict, agent_id: str, context_messages: Optional[list] = None) -> dict:
+    logger.debug(f"[create_agent_response_task] 진입 — room_id={room_id!r} message_id={message.get('message_id')!r} agent_id={agent_id!r}")
     task_input: dict = {"room_id": room_id, "message_id": message["message_id"], "instruction": message["text"]}
     if context_messages:
         task_input["context_messages"] = context_messages
@@ -120,6 +127,7 @@ def get_task(task_id: str) -> dict:
 
 
 def acquire_lease(task_id: str, payload: dict) -> tuple[dict, dict]:
+    logger.debug(f"[acquire_lease] 진입 — task_id={task_id!r} worker_id={payload.get('worker_id')!r} job_id={payload.get('job_id')!r}")
     with STORE.transaction():
         task = get_task(task_id)
         if task["status"] not in ("queued", "retry_scheduled"):
@@ -174,6 +182,7 @@ def _active_lease(task_id: str, lease_id: str, worker_id: str) -> dict:
 
 
 def update_progress(task_id: str, payload: dict) -> dict:
+    logger.debug(f"[update_progress] 진입 — task_id={task_id!r} message={payload.get('message')!r}")
     with STORE.transaction():
         get_task(task_id)
         lease = _active_lease(task_id, payload["lease_id"], payload["worker_id"])
@@ -194,6 +203,7 @@ def update_progress(task_id: str, payload: dict) -> dict:
 
 
 def complete_task(task_id: str, payload: dict) -> tuple[dict, dict]:
+    logger.debug(f"[complete_task] 진입 — task_id={task_id!r} worker_id={payload.get('worker_id')!r}")
     with STORE.transaction():
         task = get_task(task_id)
         lease = _active_lease(task_id, payload["lease_id"], payload["worker_id"])
@@ -231,19 +241,32 @@ def complete_task(task_id: str, payload: dict) -> tuple[dict, dict]:
                 "finished_at": now,
             }
         )
+        result_json = {"summary": payload.get("summary"), "artifact_paths": payload.get("artifact_paths", [])}
         task = STORE.update_task(
             task_id,
             {
-                "result_json": {"summary": payload.get("summary"), "artifact_paths": payload.get("artifact_paths", [])},
+                "result_json": result_json,
                 "status": "review_required" if task["constraints_json"].get("requires_review") else "done",
                 "completed_at": now,
                 "updated_at": now,
             },
         )
+        
+        if task["task_type"] == "agent_response":
+            from modules.chat_manager import persist_agent_response_message
+            logger.debug(f"[complete_task] calling persist_agent_response_message for task {task_id}")
+            try:
+                msg = persist_agent_response_message(task, result_json)
+                if msg is None:
+                    logger.error(f"[complete_task] persist_agent_response_message returned None for task {task_id}")
+            except Exception as e:
+                logger.error(f"[complete_task] persist_agent_response_message raised an exception for task {task_id}: {e}")
+        
         return task, run
 
 
 def fail_task(task_id: str, payload: dict) -> tuple[dict, dict]:
+    logger.debug(f"[fail_task] 진입 — task_id={task_id!r} worker_id={payload.get('worker_id')!r} code={payload.get('code')!r}")
     with STORE.transaction():
         task = get_task(task_id)
         lease = None
@@ -286,3 +309,96 @@ def fail_task(task_id: str, payload: dict) -> tuple[dict, dict]:
             updates["next_run_at"] = (datetime.now(JST) + timedelta(seconds=delay)).isoformat(timespec="seconds")
         task = STORE.update_task(task_id, updates)
         return task, run
+
+
+# ── 폴링 루프 ────────────────────────────────────────────────────────────────
+
+
+async def _dispatch_pending_tasks() -> None:
+    """실행 가능한 agent_response 태스크를 조회하고 순차 처리한다."""
+    from modules.chat_manager import _call_ai_sync, _build_chat_history
+
+    now = datetime.now(JST)
+    runnable = [
+        t for t in STORE.list_tasks()
+        if t["task_type"] == "agent_response"
+        and t["status"] in ("queued", "retry_scheduled")
+        and (
+            t["status"] != "retry_scheduled"
+            or not t.get("next_run_at")
+            or datetime.fromisoformat(t["next_run_at"]) <= now
+        )
+    ]
+
+    for task in runnable:
+        task_id = task["task_id"]
+        logger.debug(f"[poll_loop] 태스크 처리 시작 — task_id={task_id!r}")
+
+        job_id = STORE.next_id("job")
+        try:
+            lease, task = acquire_lease(task_id, {"worker_id": _POLL_WORKER_ID, "job_id": job_id})
+        except Exception as e:
+            logger.debug(f"[poll_loop] lease 획득 실패 — task_id={task_id!r}: {e}")
+            continue
+
+        lease_id = lease["lease_id"]
+        logger.debug(f"[poll_loop] lease 획득 성공 — task_id={task_id!r} lease_id={lease_id!r}")
+
+        agent_id = task.get("assigned_agent_id")
+        agent = STORE.get_agent(agent_id) if agent_id else None
+
+        task_input = task.get("input_json", {})
+        room_id = task_input.get("room_id")
+        user_message_id = task_input.get("message_id")
+        instruction = task_input.get("instruction", "")
+
+        history = _build_chat_history(room_id, user_message_id) if room_id and user_message_id else []
+
+        runner = task.get("assigned_runner") or "copilot"
+        model = task.get("assigned_model") or "claude-sonnet-4-5"
+
+        logger.debug(f"[poll_loop] AI 호출 시작 — task_id={task_id!r} runner={runner!r} model={model!r}")
+        try:
+            ai_text = await asyncio.to_thread(
+                _call_ai_sync,
+                runner=runner,
+                model=model,
+                system_prompt=agent.get("system_prompt") if agent else None,
+                history=history,
+                user_text=instruction,
+                pinned_context=agent.get("pinned_context") if agent else None,
+            )
+            logger.debug(f"[poll_loop] AI 호출 성공 — task_id={task_id!r}")
+            complete_task(task_id, {
+                "worker_id": _POLL_WORKER_ID,
+                "lease_id": lease_id,
+                "summary": ai_text,
+                "artifact_paths": [],
+            })
+            logger.info(f"[poll_loop] 태스크 완료 — task_id={task_id!r}")
+        except Exception as e:
+            logger.error(f"[poll_loop] AI 호출 실패 — task_id={task_id!r}: {e}")
+            try:
+                fail_task(task_id, {
+                    "worker_id": _POLL_WORKER_ID,
+                    "lease_id": lease_id,
+                    "code": "AI_CALL_FAILED",
+                    "message": str(e),
+                    "retryable": True,
+                })
+            except Exception as fe:
+                logger.error(f"[poll_loop] fail_task 호출 실패 — task_id={task_id!r}: {fe}")
+
+
+async def poll_loop() -> None:
+    """서버 백그라운드 폴링 루프 — 큐잉된 agent_response 태스크를 주기적으로 처리한다."""
+    logger.info("[poll_loop] 폴링 루프 시작")
+    try:
+        while True:
+            await asyncio.sleep(POLL_INTERVAL_SECONDS)
+            try:
+                await _dispatch_pending_tasks()
+            except Exception as e:
+                logger.error(f"[poll_loop] 폴링 중 예외 발생: {e}")
+    except asyncio.CancelledError:
+        logger.info("[poll_loop] 폴링 루프 종료 (CancelledError)")

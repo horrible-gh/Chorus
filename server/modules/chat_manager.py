@@ -12,6 +12,7 @@ from typing import Any, Iterator, List, Optional
 
 from fastapi import HTTPException
 
+import LogAssist.log as logger
 from config import get_db_instance, get_sqloader_instance
 
 JST = timezone(timedelta(hours=9))
@@ -835,6 +836,7 @@ def remove_agent(room_id: str, agent_id: str, actor_user_id: str) -> dict:
 
 
 def send_message(room_id: str, payload: dict) -> tuple[dict, List[dict]]:
+    logger.debug(f"[send_message] 진입 — room_id={room_id!r} delivery_mode={payload.get('delivery_mode')!r} visibility={payload.get('visibility')!r}")
     from modules.worker_loop import create_agent_response_task
 
     with STORE.transaction():
@@ -947,6 +949,75 @@ def list_visible_messages(
     return visible
 
 
+def persist_agent_response_message(task: dict, result_json: dict) -> Optional[dict]:
+    """
+    T023: Save agent_response task result to messages table.
+    
+    Persists the AI response as a message when an agent_response task completes.
+    Checks for duplicates using source_task_id to prevent duplicate inserts.
+    
+    Args:
+        task: Completed task dict with input_json containing room_id, message_id, and assigned_agent_id
+        result_json: Task result containing "summary" (the AI response text)
+    
+    Returns:
+        Inserted message dict, or None if duplicate detected or inputs missing
+    """
+    task_id = task.get("task_id")
+    has_summary = bool(result_json.get("summary"))
+    logger.debug(f"[persist_agent_response_message] enter task_id={task_id} has_summary={has_summary}")
+    try:
+        task_input = task.get("input_json", {})
+        room_id = task_input.get("room_id")
+        user_message_id = task_input.get("message_id")
+
+        if not room_id or not user_message_id:
+            logger.debug(f"[persist_agent_response_message] missing room_id or message_id for task {task_id}")
+            return None
+
+        agent_response_text = result_json.get("summary", "")
+        if not agent_response_text:
+            logger.debug(f"[persist_agent_response_message] empty summary for task {task_id}, skipping insert")
+            return None
+
+        with STORE.transaction():
+            rows = STORE._fetch_all(
+                STORE._sql("list_messages"),
+                [room_id]
+            )
+            for row in rows:
+                msg = STORE._message_from_row(row)
+                if msg and msg.get("source_task_id") == task["task_id"]:
+                    logger.debug(f"[persist_agent_response_message] duplicate detected for task {task_id}, skipping insert")
+                    return None
+
+            created_at = now_iso()
+            logger.debug(f"[persist_agent_response_message] inserting message for task {task_id} room_id={room_id}")
+            agent_message = STORE.insert_message(
+                {
+                    "message_id": STORE.next_id("msg"),
+                    "room_id": room_id,
+                    "sender_type": "agent",
+                    "sender_user_id": None,
+                    "sender_agent_id": task.get("assigned_agent_id"),
+                    "visibility": "room",
+                    "content_type": "text",
+                    "text": agent_response_text,
+                    "delivery_mode": "append_history",
+                    "history_state": "active",
+                    "replaced_by_message_id": None,
+                    "source_task_id": task["task_id"],
+                    "token_estimate": None,
+                    "created_at": created_at,
+                }
+            )
+            logger.debug(f"[persist_agent_response_message] insert done for task {task_id} message_id={agent_message.get('message_id') if agent_message else None}")
+            return agent_message
+    except Exception as e:
+        logger.error(f"[persist_agent_response_message] error persisting agent response for task {task_id}: {e}")
+        return None
+
+
 # ── T012: Agent Chat synchronous response ────────────────────────────────────
 
 
@@ -972,6 +1043,7 @@ def _call_ai_sync(
     system_prompt: Optional[str],
     history: List[dict],
     user_text: str,
+    pinned_context: Optional[str] = None,
 ) -> str:
     """
     Call AI CLI synchronously and return the response text.
@@ -982,6 +1054,8 @@ def _call_ai_sync(
     parts: List[str] = []
     if system_prompt:
         parts.append(system_prompt)
+    if pinned_context and pinned_context.strip():
+        parts.append(f"Pinned context:\n\n{pinned_context}")
     for msg in history:
         prefix = "AI" if msg["role"] == "assistant" else "User"
         parts.append(f"{prefix}: {msg['content']}")
@@ -1073,6 +1147,7 @@ def send_message_sync(room_id: str, payload: dict) -> tuple[dict, List[dict]]:
     Restrictions (T012 scope): public messages only; whisper, compression,
     one_shot context modes, and Worker Loop are not used here.
     """
+    logger.debug(f"[send_message_sync] 진입 — room_id={room_id!r} delivery_mode={payload.get('delivery_mode')!r}")
     from modules.routing import select_model
 
     # ── Phase 1: save user message and prepare routing (inside transaction) ──
@@ -1146,6 +1221,7 @@ def send_message_sync(room_id: str, payload: dict) -> tuple[dict, List[dict]]:
         system_prompt=agent.get("system_prompt"),
         history=history,
         user_text=payload["content"]["text"],
+        pinned_context=agent.get("pinned_context"),
     )
 
     # ── Phase 3: save AI response (inside transaction) ──
