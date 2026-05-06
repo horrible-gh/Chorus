@@ -16,7 +16,7 @@ logger.logger_init(logger_config)
 SERVICE_SQLOADER = "sql/queries"
 MIGRATION_PATHS = "sql/migrations"
 
-# 🔹 Enum을 사용하여 DB_TYPE을 명확하게 정의
+# 🔹 Use Enum for clear DB_TYPE definition
 class DBType(str, Enum):
     MYSQL = "mysql"
     SQLITE = "sqlite"
@@ -24,15 +24,15 @@ class DBType(str, Enum):
     POSTGRES = "postgres"
     LOCAL = "local"
 
-# 🔹 설정 클래스 (Pydantic 활용)
+# 🔹 Settings class (using Pydantic)
 class Settings(BaseSettings):
     ALLOWED_ORIGIN: str
     SECRET_KEY: str
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-    # REL-013: token_refresh 임계값 (분 단위). threshold >= token_lifetime 시 자동 clamp.
+    # REL-013: token_refresh threshold (in minutes). Auto-clamped when threshold >= token_lifetime.
     TOKEN_REFRESH_THRESHOLD_MINUTES: int = 1
     CONTEXT: str
-    DB_TYPE: DBType  # Enum 적용
+    DB_TYPE: DBType  # Enum applied
     DB_HOST: str = ""
     DB_PORT: int = 0
     DB_USER: str = ""
@@ -45,8 +45,8 @@ class Settings(BaseSettings):
     # NOTE: preset activation is now managed by server/res/preset_hands.json
     # and not by environment settings. PRESET_HANDS removed per T072.
 
-    # REL-010: 점검 모드 — .env에서 MAINTENANCE_MODE=true/false 로 전환
-    # 메시지는 server/res/maintenance/maintenance_{lang}.txt 파일 기반으로 전달
+    # REL-010: maintenance mode — toggle via MAINTENANCE_MODE=true/false in .env
+    # Message is served from server/res/maintenance/maintenance_{lang}.txt
     MAINTENANCE_MODE: bool = False
 
     RATE_LIMIT_DEFAULT: str = "100/hour"
@@ -54,13 +54,18 @@ class Settings(BaseSettings):
     RATE_LIMIT_UPLOAD: str = "20/hour"
     RATE_LIMIT_DOWNLOAD: str = "50/hour"
 
+    # Redis configuration
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: int = 6379
+    REDIS_DB: int = 0
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 settings = Settings()
 
 
 
-# 🔹 DB 설정 클래스 (싱글톤 패턴 적용)
+# 🔹 DB settings class (singleton pattern)
 class DatabaseSetting:
     _instance = None
 
@@ -71,7 +76,7 @@ class DatabaseSetting:
         return cls._instance
 
     def _init_db(self):
-        """DB 초기화"""
+        """Initialize DB"""
         self.db_instance = None
         self.sqloader = None
         self.migrator = None
@@ -145,7 +150,7 @@ class DatabaseSetting:
 
 
     def instance_init(self):
-        """DB 인스턴스 초기화"""
+        """Initialize DB instance"""
         logger.debug("config", self.config)
 
         try:
@@ -157,7 +162,7 @@ class DatabaseSetting:
             logger.error(traceback.format_exc())
             raise
 
-        # 2FA 초기화 (SQLStorage + Auth2FAAdapter 사용)
+        # Initialize 2FA (using SQLStorage + Auth2FAAdapter)
         try:
             adapter = Auth2FAAdapter(self.db_instance)
             self.tfa = TwoFactorAuth(issuer="ChipSama", sq=adapter)
@@ -174,7 +179,7 @@ class DatabaseSetting:
     def get_sqloader_instance(self):
         return self.sqloader
 
-# 🔹 싱글톤 객체 생성
+# 🔹 Create singleton objects
 import os
 
 # During test runs, avoid initializing the full DB/migrator which may require
@@ -182,7 +187,7 @@ import os
 # `TESTING=1` to skip DB initialization.
 if os.getenv("TESTING", "0") != "1":
     db = DatabaseSetting()
-    # 기존 임포트 호환성 유지
+    # Maintain backward import compatibility
     tfa = db.tfa
 else:
     class _DummyDB:
@@ -201,7 +206,7 @@ else:
     db = _DummyDB()
     tfa = None
 
-# 🔹 FastAPI에서 의존성 주입으로 사용할 함수
+# 🔹 Dependency injection function for FastAPI
 def get_db_instance():
     return db.get_db_instance()
 

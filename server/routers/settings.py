@@ -21,7 +21,7 @@ pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 router = APIRouter()
 
 
-# ── 프로필 조회 ─────────────────────────────────────────────────────
+# ── Profile retrieval ────────────────────────────────────────────────
 @router.get("/profile", response_model=UserProfileResponse)
 async def get_profile(user_id: str = Depends(verify_token)):
     user = sqloader.fetch_one("chorus", "get_user", (user_id,))
@@ -37,7 +37,7 @@ async def get_profile(user_id: str = Depends(verify_token)):
     )
 
 
-# ── 비밀번호 변경 ─────────────────────────────────────────────────────
+# ── Change password ──────────────────────────────────────────────────
 @router.put("/password")
 async def change_password(
     body: ChangePasswordRequest,
@@ -55,11 +55,11 @@ async def change_password(
 
     hashed = pwd_context.hash(body.new_password)
     sqloader.execute("chorus", "update_password", (hashed, user_id))
-    logger.debug(f"[Settings] 비밀번호 변경 완료 - user_id: {user_id}")
+    logger.debug(f"[Settings] password changed - user_id: {user_id}")
     return {"ok": True}
 
 
-# ── TOTP 설정 초기화 ─────────────────────────────────────────────────
+# ── Initialize TOTP setup ────────────────────────────────────────────
 @router.post("/totp/setup", response_model=TotpSetupResponse)
 async def setup_totp(user_id: str = Depends(verify_token)):
     if tfa is None:
@@ -75,11 +75,11 @@ async def setup_totp(user_id: str = Depends(verify_token)):
         tfa.disable(user_id)
         result = tfa.setup(user_id, username=user_id)
 
-    logger.debug(f"[Settings] TOTP 설정 초기화 - user_id: {user_id}")
+    logger.debug(f"[Settings] TOTP setup initialized - user_id: {user_id}")
     return TotpSetupResponse(**result)
 
 
-# ── TOTP 활성화 ─────────────────────────────────────────────────────
+# ── Enable TOTP ──────────────────────────────────────────────────────
 @router.post("/totp/activate", response_model=TotpActivateResponse)
 async def activate_totp(
     body: TotpActivateRequest,
@@ -99,11 +99,11 @@ async def activate_totp(
     if not ok:
         raise HTTPException(status_code=400, detail="invalid_totp_code")
 
-    logger.debug(f"[Settings] TOTP 활성화 완료 - user_id: {user_id}")
+    logger.debug(f"[Settings] TOTP enabled - user_id: {user_id}")
     return TotpActivateResponse(ok=True)
 
 
-# ── TOTP 비활성화 ─────────────────────────────────────────────────────
+# ── Disable TOTP ─────────────────────────────────────────────────────
 @router.delete("/totp", response_model=dict)
 async def disable_totp(
     body: TotpDisableRequest,
@@ -119,5 +119,5 @@ async def disable_totp(
         raise HTTPException(status_code=400, detail="invalid_totp_code")
 
     tfa.disable(user_id)
-    logger.debug(f"[Settings] TOTP 비활성화 완료 - user_id: {user_id}")
+    logger.debug(f"[Settings] TOTP disabled - user_id: {user_id}")
     return {"ok": True}

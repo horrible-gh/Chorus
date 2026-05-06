@@ -14,8 +14,8 @@ router = APIRouter()
 
 
 class VerifyMailRequest(BaseModel):
-    user_id: EmailStr  # 이메일 주소
-    verify_code: str   # 6자리 인증 코드
+    user_id: EmailStr  # email address
+    verify_code: str   # 6-digit verification code
 
 
 class VerifyMailResponse(BaseModel):
@@ -29,45 +29,45 @@ class VerifyMailResponse(BaseModel):
 @limiter.limit(settings.RATE_LIMIT_LOGIN)
 async def verify_mail(request: Request, body: VerifyMailRequest):
     """
-    이메일 인증 API
-    - user_id: 이메일 주소
-    - verify_code: 6자리 인증 코드
-    - 인증 코드 확인 → 이메일 인증 완료 처리
+    Email verification API
+    - user_id: email address
+    - verify_code: 6-digit verification code
+    - Validates code → marks email as verified
     """
     user_id = body.user_id
     verify_code = body.verify_code
 
-    logger.debug(f"[VerifyMail] 이메일 인증 요청 - user_id: {user_id}, code: {verify_code}")
+    logger.debug(f"[VerifyMail] email verification request - user_id: {user_id}, code: {verify_code}")
 
-    # 1. 인증 코드 확인 (유효성 검증)
+    # 1. Check verification code (validate)
     verification = sqloader.fetch_one("chipsama", "check_verify_code", (user_id, verify_code))
 
     if not verification:
-        logger.debug(f"[VerifyMail] ❌ 인증 코드 불일치 또는 만료 - user_id: {user_id}")
+        logger.debug(f"[VerifyMail] ❌ code mismatch or expired - user_id: {user_id}")
         raise HTTPException(status_code=400, detail="Invalid or expired verification code")
 
     verification_id = verification.get("id")
-    logger.debug(f"[VerifyMail] ✅ 인증 코드 확인 완료 - verification_id: {verification_id}")
+    logger.debug(f"[VerifyMail] ✅ code verified - verification_id: {verification_id}")
 
-    # 2. 트랜잭션으로 이메일 인증 처리
+    # 2. Process email verification in a transaction
     try:
         db_instance.begin_transaction()
 
-        # 이메일 인증 완료 처리
+        # Mark email as verified
         sqloader.execute("chipsama", "update_email_verified", (user_id,))
 
-        # 인증 코드 사용 처리 (재사용 방지)
+        # Mark verification code as used (prevent reuse)
         sqloader.execute("chipsama", "mark_verify_code_used", (verification_id,))
 
         db_instance.commit()
-        logger.debug(f"[VerifyMail] ✅ 이메일 인증 완료 - user_id: {user_id}")
+        logger.debug(f"[VerifyMail] ✅ email verified - user_id: {user_id}")
 
     except Exception as e:
         try:
             db_instance.rollback()
         except:
             pass
-        logger.error(f"[VerifyMail] ❌ 이메일 인증 실패 - {e}")
+        logger.error(f"[VerifyMail] ❌ email verification failed - {e}")
         raise HTTPException(status_code=500, detail="Email verification failed")
 
     return VerifyMailResponse(

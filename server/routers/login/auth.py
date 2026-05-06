@@ -19,7 +19,7 @@ def is_token_blacklisted(token: str) -> bool:
     return token in token_blacklist
 
 def verify_token(token: str = Depends(oauth2_scheme)):
-    #Logger.debug(f"🔍 받은 토큰: {token}")
+    #Logger.debug(f"🔍 Received token: {token}")
 
     credentials_exception = HTTPException(
         status_code=401,
@@ -28,7 +28,7 @@ def verify_token(token: str = Depends(oauth2_scheme)):
     )
 
     try:
-        # ✅ 블랙리스트된 토큰인지 확인
+        # ✅ Check if token is blacklisted
         if is_token_blacklisted(token):
             raise HTTPException(status_code=401, detail="Token has been logged out")
 
@@ -40,7 +40,7 @@ def verify_token(token: str = Depends(oauth2_scheme)):
         if user_id is None or exp is None:
             raise credentials_exception
 
-        # totp_pending 토큰으로 일반 API 접근 불가
+        # totp_pending token cannot access regular API endpoints
         if totp_pending:
             raise HTTPException(status_code=401, detail="2FA verification required")
 
