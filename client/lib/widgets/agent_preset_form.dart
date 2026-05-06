@@ -2,12 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:file_selector/file_selector.dart';
 
 import '../models/agent_preset.dart';
+import '../models/provider_token.dart';
 
 class AgentPresetForm extends StatefulWidget {
   const AgentPresetForm({
     super.key,
     required this.ownerUserId,
     required this.onSubmit,
+    required this.tokens,
     this.preset,
     this.isSaving = false,
     this.enabled = true,
@@ -17,6 +19,7 @@ class AgentPresetForm extends StatefulWidget {
   final AgentPreset? preset;
   final bool isSaving;
   final bool enabled;
+  final List<ProviderToken> tokens;
   final ValueChanged<AgentPresetDraft> onSubmit;
 
   @override
@@ -191,6 +194,7 @@ class _AgentPresetFormState extends State<AgentPresetForm> {
             _TokenDropdown(
               value: _providerTokenId,
               enabled: _canEdit,
+              tokens: widget.tokens,
               onChanged: (value) {
                 setState(() {
                   _providerTokenId = value;
@@ -594,19 +598,17 @@ class _TokenDropdown extends StatelessWidget {
   const _TokenDropdown({
     required this.value,
     required this.enabled,
+    required this.tokens,
     required this.onChanged,
   });
 
   final String? value;
   final bool enabled;
+  final List<ProviderToken> tokens;
   final ValueChanged<String?> onChanged;
 
   @override
   Widget build(BuildContext context) {
-    final tokens = [
-      if (value != null && value!.isNotEmpty) value!,
-    ];
-
     return DropdownButtonFormField<String?>(
       initialValue: value == null || value!.isEmpty ? null : value,
       decoration: const InputDecoration(
@@ -620,9 +622,9 @@ class _TokenDropdown extends StatelessWidget {
         ),
         for (final token in tokens)
           DropdownMenuItem<String?>(
-            value: token,
+            value: token.tokenId,
             child: Text(
-              token,
+              token.alias,
               overflow: TextOverflow.ellipsis,
             ),
           ),

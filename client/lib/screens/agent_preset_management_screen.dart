@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/agent_preset.dart';
+import '../models/provider_token.dart';
 import '../providers/auth_provider.dart';
 import '../services/agent_preset_service.dart';
+import '../services/provider_token_service.dart';
 import '../widgets/agent_preset_form.dart';
 import '../widgets/agent_preset_list_item.dart';
 
@@ -18,7 +20,9 @@ class AgentPresetManagementScreen extends StatefulWidget {
 class _AgentPresetManagementScreenState
     extends State<AgentPresetManagementScreen> {
   AgentPresetService? _service;
+  ProviderTokenService? _tokenService;
   List<AgentPreset> _presets = const [];
+  List<ProviderToken> _tokens = const [];
   String? _selectedAgentId;
   bool _isCreating = true;
   bool _isLoading = true;
@@ -44,7 +48,9 @@ class _AgentPresetManagementScreenState
     final auth = context.read<AuthProvider>();
     if (_service == null) {
       _service = AgentPresetService(auth.dio);
+      _tokenService = ProviderTokenService(auth.dio);
       _loadPresets();
+      _loadTokens();
     }
   }
 
@@ -96,6 +102,7 @@ class _AgentPresetManagementScreenState
                   preset: _isCreating ? null : selectedPreset,
                   enabled: editingEnabled,
                   isSaving: _isSaving,
+                  tokens: _tokens,
                   onSubmit: _savePreset,
                 );
 
@@ -174,6 +181,17 @@ class _AgentPresetManagementScreenState
         _error = 'Unable to load presets.';
         _isLoading = false;
       });
+    }
+  }
+
+  Future<void> _loadTokens() async {
+    final userId = context.read<AuthProvider>().user?.userId ?? '';
+    if (userId.isEmpty) return;
+    try {
+      final tokens = await _tokenService!.listTokens(ownerUserId: userId);
+      if (mounted) setState(() => _tokens = tokens);
+    } catch (_) {
+      // Token load failure, maintain empty list
     }
   }
 

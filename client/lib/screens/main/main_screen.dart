@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
@@ -774,7 +775,7 @@ class _ChatHeader extends StatelessWidget {
   }
 }
 
-class _Composer extends StatelessWidget {
+class _Composer extends StatefulWidget {
   const _Composer({
     required this.controller,
     required this.activeAgents,
@@ -816,6 +817,41 @@ class _Composer extends StatelessWidget {
   final VoidCallback onSend;
 
   @override
+  State<_Composer> createState() => _ComposerState();
+}
+
+class _ComposerState extends State<_Composer> {
+  late FocusNode _focusNode;
+
+  @override
+  void initState() {
+    super.initState();
+    _focusNode = FocusNode();
+  }
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.enter &&
+        HardwareKeyboard.instance.isControlPressed) {
+      final canSend = !widget.sending &&
+          widget.controller.text.trim().isNotEmpty &&
+          (!widget.whisper || widget.selectedAgentIds.isNotEmpty);
+
+      if (canSend) {
+        widget.onSend();
+        return KeyEventResult.handled;
+      }
+    }
+    return KeyEventResult.ignored;
+  }
+
+  @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     return DecoratedBox(
@@ -836,52 +872,52 @@ class _Composer extends StatelessWidget {
               runSpacing: 8,
               children: [
                 FilterChip(
-                  selected: whisper,
+                  selected: widget.whisper,
                   avatar: const Icon(Icons.lock_outline, size: 18),
                   label: const Text('Whisper'),
-                  onSelected: activeAgents.isEmpty ? null : onWhisperChanged,
+                  onSelected: widget.activeAgents.isEmpty ? null : widget.onWhisperChanged,
                 ),
                 FilterChip(
-                  selected: oneShot,
+                  selected: widget.oneShot,
                   avatar: const Icon(Icons.flash_on_outlined, size: 18),
                   label: const Text('One shot'),
-                  onSelected: onOneShotChanged,
+                  onSelected: widget.onOneShotChanged,
                 ),
                 FilterChip(
-                  selected: pinOnSend,
+                  selected: widget.pinOnSend,
                   avatar: const Icon(Icons.push_pin_outlined, size: 18),
                   label: const Text('Pin'),
-                  onSelected: onPinOnSendChanged,
+                  onSelected: widget.onPinOnSendChanged,
                 ),
               ],
             ),
-            if (whisper) ...[
+            if (widget.whisper) ...[
               const SizedBox(height: 8),
               Wrap(
                 spacing: 8,
                 runSpacing: 8,
                 children: [
-                  for (final agent in activeAgents)
+                  for (final agent in widget.activeAgents)
                     FilterChip(
-                      selected: selectedAgentIds.contains(agent.agentId),
+                      selected: widget.selectedAgentIds.contains(agent.agentId),
                       avatar: const Icon(Icons.smart_toy_outlined, size: 18),
                       label: Text(agent.displayName),
                       onSelected: agent.agentId == null
                           ? null
                           : (selected) =>
-                              onAgentToggled(agent.agentId!, selected),
+                              widget.onAgentToggled(agent.agentId!, selected),
                     ),
                 ],
               ),
             ],
-            if (isOneShotRoom) ...[
+            if (widget.isOneShotRoom) ...[
               const SizedBox(height: 8),
               ChatContextSelector(
-                options: contextOptions,
-                onChanged: onContextChanged,
-                userId: userId,
-                fileUploadService: fileUploadService,
-                pinnedMessagePreview: pinnedMessagePreview,
+                options: widget.contextOptions,
+                onChanged: widget.onContextChanged,
+                userId: widget.userId,
+                fileUploadService: widget.fileUploadService,
+                pinnedMessagePreview: widget.pinnedMessagePreview,
               ),
             ],
             const SizedBox(height: 10),
@@ -889,33 +925,37 @@ class _Composer extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 Expanded(
-                  child: TextField(
-                    controller: controller,
-                    minLines: 1,
-                    maxLines: 5,
-                    textInputAction: TextInputAction.newline,
-                    decoration: const InputDecoration(
-                      hintText: 'Message',
-                      prefixIcon: Icon(Icons.chat_bubble_outline),
+                  child: Focus(
+                    focusNode: _focusNode,
+                    onKeyEvent: _handleKeyEvent,
+                    child: TextField(
+                      controller: widget.controller,
+                      minLines: 1,
+                      maxLines: 5,
+                      textInputAction: TextInputAction.newline,
+                      decoration: const InputDecoration(
+                        hintText: 'Message',
+                        prefixIcon: Icon(Icons.chat_bubble_outline),
+                      ),
                     ),
                   ),
                 ),
                 const SizedBox(width: 10),
                 ValueListenableBuilder<TextEditingValue>(
-                  valueListenable: controller,
+                  valueListenable: widget.controller,
                   builder: (context, value, child) {
-                    final canSend = !sending &&
+                    final canSend = !widget.sending &&
                         value.text.trim().isNotEmpty &&
-                        (!whisper || selectedAgentIds.isNotEmpty);
+                        (!widget.whisper || widget.selectedAgentIds.isNotEmpty);
                     return IconButton.filled(
                       tooltip: 'Send',
-                      icon: sending
+                      icon: widget.sending
                           ? const SizedBox.square(
                               dimension: 18,
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
                           : const Icon(Icons.send),
-                      onPressed: canSend ? onSend : null,
+                      onPressed: canSend ? widget.onSend : null,
                     );
                   },
                 ),

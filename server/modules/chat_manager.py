@@ -16,6 +16,7 @@ from config import get_db_instance, get_sqloader_instance
 
 JST = timezone(timedelta(hours=9))
 SERVER_DIR = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def now_iso() -> str:
@@ -992,17 +993,32 @@ def _call_ai_sync(
 
     if runner == "copilot":
         executable = shutil.which("copilot") or "copilot"
+        safe_prompt = prompt.replace('\r\n', '\n').replace('\n', ' ')
         result = subprocess.run(
-            [executable, "--model", model, "-p", prompt],
+            [executable, "--allow-all", "--model", model, "-p", safe_prompt],
             capture_output=True,
             text=True,
             encoding="utf-8",
             timeout=120,
+            cwd=PROJECT_ROOT,
         )
         output = _ansi.sub("", result.stdout).strip()
 
     elif runner == "claude":
         executable = shutil.which("claude") or "claude"
+        result = subprocess.run(
+            [executable, "--dangerously-skip-permissions", "--model", model, "-p", "-"],
+            input=prompt,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+            cwd=PROJECT_ROOT,
+        )
+        output = _ansi.sub("", result.stdout).strip()
+
+    elif runner == "gemini":
+        executable = shutil.which("gemini") or "gemini"
         result = subprocess.run(
             [executable, "--model", model, "-p", "-"],
             input=prompt,
@@ -1010,6 +1026,7 @@ def _call_ai_sync(
             text=True,
             encoding="utf-8",
             timeout=120,
+            cwd=PROJECT_ROOT,
         )
         output = _ansi.sub("", result.stdout).strip()
 
@@ -1017,6 +1034,18 @@ def _call_ai_sync(
         raise HTTPException(
             status_code=501,
             detail={"code": "RUNNER_NOT_SUPPORTED", "runner": runner},
+        )
+
+    if result.returncode != 0:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": "AI_SUBPROCESS_FAILED",
+                "runner": runner,
+                "model": model,
+                "returncode": result.returncode,
+                "stderr": result.stderr.strip()[:500] if result.stderr else "",
+            },
         )
 
     if not output:

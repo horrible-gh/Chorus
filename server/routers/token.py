@@ -1,6 +1,4 @@
-from typing import Optional
-
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 
 from modules import token_manager
 from routers.login.auth import verify_token
@@ -11,10 +9,9 @@ router = APIRouter()
 
 @router.get("", response_model=dict)
 async def list_tokens(
-    owner_user_id: Optional[str] = Query(default=None),
     _user_id: str = Depends(verify_token),
 ):
-    tokens = token_manager.list_tokens(owner_user_id=owner_user_id)
+    tokens = token_manager.list_tokens(owner_user_id=_user_id)
     return {"tokens": [ProviderToken(**t) for t in tokens]}
 
 
@@ -23,7 +20,9 @@ async def create_token(
     request: ProviderTokenCreate,
     _user_id: str = Depends(verify_token),
 ):
-    token = token_manager.create_token(request.model_dump())
+    data = request.model_dump()
+    data["owner_user_id"] = _user_id
+    token = token_manager.create_token(data)
     return {"token": ProviderToken(**token)}
 
 
