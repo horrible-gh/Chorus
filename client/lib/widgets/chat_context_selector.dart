@@ -203,7 +203,7 @@ class _PinnedMessageInfo extends StatelessWidget {
           const SizedBox(width: 6),
           Expanded(
             child: Text(
-              '메시지를 길게 눌러 고정 지정하거나, 전송 시 Pin 옵션을 사용하세요.',
+              'Long-press a message to pin it, or use the Pin option when sending.',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: colorScheme.outline,
                   ),

@@ -355,7 +355,7 @@ class _ChangePasswordSectionState extends State<_ChangePasswordSection> {
   }
 }
 
-// ── TOTP 보안 섹션 ──────────────────────────────────────────────────
+// ── TOTP security section ───────────────────────────────────────────
 class _TotpSection extends StatelessWidget {
   const _TotpSection({
     required this.service,
@@ -431,7 +431,7 @@ class _TotpSection extends StatelessWidget {
   }
 }
 
-// ── TOTP 설정 바텀시트 ────────────────────────────────────────────────
+// ── TOTP setup bottom sheet ─────────────────────────────────────────
 class _TotpSetupSheet extends StatefulWidget {
   const _TotpSetupSheet({required this.service});
 
@@ -690,7 +690,7 @@ class _TotpSetupSheetState extends State<_TotpSetupSheet> {
 
 enum _SetupStep { loading, scan, error }
 
-// ── 복구 코드 박스 ────────────────────────────────────────────────────
+// ── Recovery code box ───────────────────────────────────────────────
 class _RecoveryCodesBox extends StatelessWidget {
   const _RecoveryCodesBox({required this.codes});
 
