@@ -5,12 +5,24 @@ import 'package:flutter/foundation.dart';
 import '../models/agent_preset.dart';
 import '../models/chat.dart';
 import '../models/chat_context_options.dart';
+import '../services/chat_push_service.dart';
 import '../services/chat_service.dart';
 
 class ChatProvider extends ChangeNotifier {
-  ChatProvider(this._service);
+  ChatProvider(this._service, {String Function()? getToken})
+      : _getToken = getToken {
+    _pushService = ChatPushService(
+      wsBaseUrl: _buildWsBaseUrl(),
+    );
+    _pushService.addListener(_onPushStatusChanged);
+    _pushService.onMessageCompleted = (roomId) {
+      unawaited(_onPushMessageCompleted(roomId));
+    };
+  }
 
   final ChatService _service;
+  final String Function()? _getToken;
+  late final ChatPushService _pushService;
 
   List<ChatRoom> _rooms = const [];
   List<AgentPreset> _agents = const [];
@@ -21,6 +33,8 @@ class ChatProvider extends ChangeNotifier {
   bool _isLoadingMessages = false;
   bool _isSending = false;
   bool _hasPendingTasks = false;
+  Set<String> _pendingTaskIds = const {};
+  int _pendingTasksCompleted = 0;
   bool _isMutatingParticipants = false;
   String? _error;
   String? _lastUserId;
@@ -34,8 +48,11 @@ class ChatProvider extends ChangeNotifier {
   bool get isLoadingMessages => _isLoadingMessages;
   bool get isSending => _isSending;
   bool get hasPendingTasks => _hasPendingTasks;
+  int get pendingTasksTotal => _pendingTaskIds.length;
+  int get pendingTasksCompleted => _pendingTasksCompleted;
   bool get isMutatingParticipants => _isMutatingParticipants;
   String? get error => _error;
+  ChatPushStatus get pushStatus => _pushService.status;
 
   ChatRoom? get selectedRoom {
     for (final room in _rooms) {
@@ -94,12 +111,16 @@ class ChatProvider extends ChangeNotifier {
   Future<void> selectRoom(String roomId, String userId) async {
     if (_selectedRoomId != roomId) {
       _hasPendingTasks = false;
+      _pendingTaskIds = const {};
+      _pendingTasksCompleted = 0;
     }
     _selectedRoomId = roomId;
     _lastUserId = userId;
     _isLoadingMessages = true;
     _error = null;
     notifyListeners();
+
+    _connectPushForRoom(roomId);
 
     try {
       final results = await Future.wait([
@@ -185,11 +206,13 @@ class ChatProvider extends ChangeNotifier {
       _touchSelectedRoom(result.message.createdAt);
       _isSending = false;
       if (result.createdTasks.isNotEmpty) {
+        _pendingTaskIds = result.createdTasks.map((t) => t.taskId).toSet();
+        _pendingTasksCompleted = 0;
         _hasPendingTasks = true;
       }
       notifyListeners();
       if (result.createdTasks.isNotEmpty) {
-        unawaited(_pollAgentResponses(roomId, _messages.length, result.createdTasks.length));
+        unawaited(_pollAgentResponses(roomId));
       }
       return result;
     } catch (error, stackTrace) {
@@ -202,8 +225,8 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> _pollAgentResponses(String roomId, int countAfterSend, [int expectedCount = 1]) async {
-    for (var i = 0; i < 8; i++) {
+  Future<void> _pollAgentResponses(String roomId) async {
+    for (var i = 0; i < 30; i++) {
       await Future.delayed(const Duration(seconds: 2));
       if (!_hasPendingTasks) return;
       if (roomId != _selectedRoomId) return;
@@ -217,10 +240,7 @@ class ChatProvider extends ChangeNotifier {
           viewerUserId: userId,
         );
         _messages = messages;
-        final newCount = messages.length - countAfterSend;
-        if (newCount >= (expectedCount > 0 ? expectedCount : 1)) {
-          _hasPendingTasks = false;
-        }
+        _recalculatePending(messages);
         notifyListeners();
       } catch (error, stackTrace) {
         debugPrint('[ChatProvider._pollAgentResponses] $error');
@@ -232,7 +252,31 @@ class ChatProvider extends ChangeNotifier {
 
     if (_hasPendingTasks) {
       _hasPendingTasks = false;
+      _pendingTaskIds = const {};
+      _pendingTasksCompleted = 0;
       notifyListeners();
+    }
+  }
+
+  /// Recalculates whether pending tasks are completed.
+  ///
+  /// Counts unique tasks whose sourceTaskId is in _pendingTaskIds,
+  /// and updates _pendingTasksCompleted. Clears pending state when all are done.
+  void _recalculatePending(List<ChatMessage> messages) {
+    if (_pendingTaskIds.isEmpty) return;
+    final completedIds = messages
+        .where(
+          (m) =>
+              m.sourceTaskId != null &&
+              _pendingTaskIds.contains(m.sourceTaskId),
+        )
+        .map((m) => m.sourceTaskId!)
+        .toSet();
+    _pendingTasksCompleted = completedIds.length;
+    if (_pendingTasksCompleted >= _pendingTaskIds.length) {
+      _hasPendingTasks = false;
+      _pendingTaskIds = const {};
+      _pendingTasksCompleted = 0;
     }
   }
 
@@ -298,6 +342,30 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
+  Future<void> deleteRoom(String roomId, String userId) async {
+    try {
+      await _service.deleteRoom(roomId);
+      _rooms = _rooms.where((r) => r.roomId != roomId).toList();
+      if (_selectedRoomId == roomId) {
+        _selectedRoomId = _rooms.isNotEmpty ? _rooms.first.roomId : null;
+        if (_selectedRoomId != null) {
+          await selectRoom(_selectedRoomId!, userId);
+        } else {
+          _participants = const [];
+          _messages = const [];
+          notifyListeners();
+        }
+      } else {
+        notifyListeners();
+      }
+    } catch (error, stackTrace) {
+      debugPrint('[ChatProvider.deleteRoom] $error');
+      debugPrint('$stackTrace');
+      _error = 'Unable to delete the room.';
+      notifyListeners();
+    }
+  }
+
   void _replaceRoom(ChatRoom room) {
     final rooms = [..._rooms];
     final index = rooms.indexWhere((item) => item.roomId == room.roomId);
@@ -342,5 +410,69 @@ class ChatProvider extends ChangeNotifier {
       participants[index] = participant;
     }
     _participants = participants;
+  }
+
+  // ── WebSocket push 헬퍼 ──────────────────────────────────────────────────
+
+  static String _buildWsBaseUrl() {
+    // AppConfig.baseUrl 예: http://localhost:8018/chorus
+    // → ws://localhost:8018/chorus
+    const baseUrl = String.fromEnvironment(
+      'CHORUS_API_BASE_URL',
+      defaultValue: 'http://localhost:8018/chorus',
+    );
+    final trimmed = baseUrl.endsWith('/')
+        ? baseUrl.substring(0, baseUrl.length - 1)
+        : baseUrl;
+    if (trimmed.startsWith('https://')) {
+      return trimmed.replaceFirst('https://', 'wss://');
+    }
+    return trimmed.replaceFirst('http://', 'ws://');
+  }
+
+  void _connectPushForRoom(String roomId) {
+    final token = _getToken?.call() ?? '';
+    if (token.isEmpty) {
+      debugPrint(
+        '[ChatProvider] WebSocket not attempted: token is empty for room=$roomId',
+      );
+      return;
+    }
+    _pushService.connect(roomId, token);
+  }
+
+  void _onPushStatusChanged() {
+    notifyListeners();
+  }
+
+  Future<void> _onPushMessageCompleted(String roomId) async {
+    if (roomId != _selectedRoomId) return;
+    final userId = _lastUserId;
+    if (userId == null || userId.isEmpty) {
+      _pushService.notifyRefreshComplete();
+      return;
+    }
+    try {
+      final messages = await _service.listMessages(
+        roomId: roomId,
+        viewerUserId: userId,
+      );
+      _messages = messages;
+      _recalculatePending(messages);
+      notifyListeners();
+    } catch (error, stackTrace) {
+      debugPrint('[ChatProvider._onPushMessageCompleted] $error');
+      debugPrint('$stackTrace');
+    } finally {
+      _pushService.notifyRefreshComplete();
+    }
+  }
+
+  @override
+  void dispose() {
+    _pushService.removeListener(_onPushStatusChanged);
+    _pushService.onMessageCompleted = null;
+    _pushService.dispose();
+    super.dispose();
   }
 }

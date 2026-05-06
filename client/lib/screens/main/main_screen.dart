@@ -10,6 +10,7 @@ import '../../models/chat.dart';
 import '../../models/chat_context_options.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/chat_provider.dart';
+import '../../services/chat_push_service.dart';
 import '../../services/chat_service.dart';
 import '../../services/file_upload_service.dart';
 import '../../widgets/chat_context_selector.dart';
@@ -29,7 +30,10 @@ class _MainScreenState extends State<MainScreen> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     final auth = context.watch<AuthProvider>();
-    _chatProvider ??= ChatProvider(ChatService(auth.dio));
+    _chatProvider ??= ChatProvider(
+      ChatService(auth.dio),
+      getToken: () => auth.accessToken ?? '',
+    );
 
     final userId = auth.user?.userId;
     if (userId != null && userId.isNotEmpty && _loadedUserId != userId) {
@@ -262,6 +266,11 @@ class _RoomSidebar extends StatelessWidget {
                                   .read<ChatProvider>()
                                   .selectRoom(room.roomId, userId);
                             },
+                            onDelete: () async {
+                              await context
+                                  .read<ChatProvider>()
+                                  .deleteRoom(room.roomId, userId);
+                            },
                           );
                         },
                       ),
@@ -300,11 +309,13 @@ class _RoomTile extends StatelessWidget {
     required this.room,
     required this.selected,
     required this.onTap,
+    required this.onDelete,
   });
 
   final ChatRoom room;
   final bool selected;
   final VoidCallback onTap;
+  final VoidCallback onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -331,8 +342,41 @@ class _RoomTile extends StatelessWidget {
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
         ),
+        trailing: selected
+            ? IconButton(
+                tooltip: 'Delete room',
+                icon: Icon(
+                  Icons.delete_outline,
+                  color: colorScheme.error,
+                ),
+                onPressed: () => _confirmDelete(context),
+              )
+            : null,
         selected: selected,
         onTap: onTap,
+      ),
+    );
+  }
+
+  void _confirmDelete(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Delete Room'),
+        content: const Text('Are you sure you want to delete this room?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              onDelete();
+            },
+            child: const Text('Delete'),
+          ),
+        ],
       ),
     );
   }
@@ -466,6 +510,9 @@ class _ChatPaneState extends State<_ChatPane> {
               room: room,
               showAgentPanelButton: widget.showAgentPanelButton,
             ),
+            if (chat.pushStatus == ChatPushStatus.pushFallback ||
+                chat.pushStatus == ChatPushStatus.pushFailed)
+              const _PushFallbackBanner(),
             Expanded(
               child: Stack(
                 children: [
@@ -480,7 +527,10 @@ class _ChatPaneState extends State<_ChatPane> {
                               const SizedBox(height: 12),
                           itemBuilder: (context, index) {
                             if (index == chat.messages.length) {
-                              return const _AgentThinkingBubble();
+                              return _AgentThinkingBubble(
+                                completed: chat.pendingTasksCompleted,
+                                total: chat.pendingTasksTotal,
+                              );
                             }
                             final message = chat.messages[index];
                             final alreadyPinned =
@@ -608,13 +658,20 @@ class _ChatPaneState extends State<_ChatPane> {
       });
     }
     if (result.createdTasks.isNotEmpty) {
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(
-            '${result.createdTasks.length} agent task(s) queued.',
-          ),
+      messenger.showMaterialBanner(
+        MaterialBanner(
+          content: Text('${result.createdTasks.length} agent task(s) queued.'),
+          actions: [
+            TextButton(
+              onPressed: () => messenger.hideCurrentMaterialBanner(),
+              child: const Text('OK'),
+            ),
+          ],
         ),
       );
+      Future.delayed(const Duration(seconds: 3), () {
+        if (context.mounted) messenger.hideCurrentMaterialBanner();
+      });
     }
   }
 
@@ -1091,7 +1148,7 @@ class _MessageBubble extends StatelessWidget {
               children: [
                 Icon(Icons.push_pin_outlined, size: 18),
                 SizedBox(width: 8),
-                Text('고정 해제'),
+                Text('Unpin'),
               ],
             ),
           )
@@ -1103,7 +1160,7 @@ class _MessageBubble extends StatelessWidget {
                 Icon(Icons.push_pin_outlined, size: 18),
                 SizedBox(width: 8),
                 Flexible(
-                  child: Text('고정으로 지정', overflow: TextOverflow.ellipsis),
+                  child: Text('Pin', overflow: TextOverflow.ellipsis),
                 ),
               ],
             ),
@@ -1303,11 +1360,20 @@ class _NoRoomSelected extends StatelessWidget {
 }
 
 class _AgentThinkingBubble extends StatelessWidget {
-  const _AgentThinkingBubble();
+  const _AgentThinkingBubble({
+    this.completed = 0,
+    this.total = 0,
+  });
+
+  final int completed;
+  final int total;
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
+    final label = total > 1
+        ? 'Agents are responding… ($completed/$total)'
+        : 'Agent is responding…';
     return Align(
       alignment: Alignment.centerLeft,
       child: ConstrainedBox(
@@ -1331,7 +1397,7 @@ class _AgentThinkingBubble extends StatelessWidget {
                 ),
                 const SizedBox(width: 10),
                 Text(
-                  'Agent is responding…',
+                  label,
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: colorScheme.onSurfaceVariant,
                       ),
@@ -1482,76 +1548,83 @@ class _CreateRoomDialogState extends State<_CreateRoomDialog> {
       title: const Text('New room'),
       content: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 520),
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              TextField(
-                controller: _titleController,
-                autofocus: true,
-                decoration: const InputDecoration(
-                  labelText: 'Title',
-                  prefixIcon: Icon(Icons.title),
-                ),
-                textInputAction: TextInputAction.next,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextField(
+              controller: _titleController,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: 'Title',
+                prefixIcon: Icon(Icons.title),
               ),
-              const SizedBox(height: 16),
-              SegmentedButton<String>(
-                segments: const [
-                  ButtonSegment(
-                    value: 'append_history',
-                    icon: Icon(Icons.history),
-                    label: Text('History'),
-                  ),
-                  ButtonSegment(
-                    value: 'one_shot',
-                    icon: Icon(Icons.flash_on_outlined),
-                    label: Text('One shot'),
-                  ),
-                ],
-                selected: {_mode},
-                onSelectionChanged: (selection) {
-                  setState(() {
-                    _mode = selection.first;
-                  });
-                },
-              ),
-              if (widget.agents.isNotEmpty) ...[
-                const SizedBox(height: 16),
-                Text(
-                  'Invite agents',
-                  style: Theme.of(context).textTheme.titleSmall,
+              textInputAction: TextInputAction.next,
+            ),
+            const SizedBox(height: 16),
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(
+                  value: 'append_history',
+                  icon: Icon(Icons.history),
+                  label: Text('History'),
                 ),
-                const SizedBox(height: 8),
-                for (final agent in widget.agents)
-                  CheckboxListTile(
-                    contentPadding: EdgeInsets.zero,
-                    dense: true,
-                    value: _selectedAgentIds.contains(agent.agentId),
-                    title: Text(
-                      agent.displayName,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    subtitle: Text(
-                      agent.roleName,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    onChanged: (selected) {
-                      setState(() {
-                        if (selected == true) {
-                          _selectedAgentIds.add(agent.agentId);
-                        } else {
-                          _selectedAgentIds.remove(agent.agentId);
-                        }
-                      });
-                    },
-                  ),
+                ButtonSegment(
+                  value: 'one_shot',
+                  icon: Icon(Icons.flash_on_outlined),
+                  label: Text('One shot'),
+                ),
               ],
+              selected: {_mode},
+              onSelectionChanged: (selection) {
+                setState(() {
+                  _mode = selection.first;
+                });
+              },
+            ),
+            if (widget.agents.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Text(
+                'Invite agents',
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                height: 280,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: widget.agents.map((agent) {
+                      return CheckboxListTile(
+                        contentPadding: EdgeInsets.zero,
+                        dense: true,
+                        value: _selectedAgentIds.contains(agent.agentId),
+                        title: Text(
+                          agent.displayName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        subtitle: Text(
+                          agent.roleName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        onChanged: (selected) {
+                          setState(() {
+                            if (selected == true) {
+                              _selectedAgentIds.add(agent.agentId);
+                            } else {
+                              _selectedAgentIds.remove(agent.agentId);
+                            }
+                          });
+                        },
+                      );
+                    }).toList(),
+                  ),
+                ),
+              ),
             ],
-          ),
+          ],
         ),
       ),
       actions: [
@@ -1619,4 +1692,37 @@ String _timeOfDay(String value) {
     return value;
   }
   return DateFormat('HH:mm').format(parsed.toLocal());
+}
+
+/// Status badge displayed below the chat header in push_fallback/push_failed state.
+class _PushFallbackBanner extends StatelessWidget {
+  const _PushFallbackBanner();
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Container(
+      width: double.infinity,
+      color: colorScheme.errorContainer,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.wifi_off_rounded,
+            size: 14,
+            color: colorScheme.onErrorContainer,
+          ),
+          const SizedBox(width: 6),
+          Text(
+            'Live updates disconnected · Auto-refreshing',
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: colorScheme.onErrorContainer,
+                ),
+          ),
+        ],
+      ),
+    );
+  }
 }
