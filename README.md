@@ -2,6 +2,10 @@
 
 A real-time chat and task management platform built with Flutter and FastAPI, enabling seamless collaboration and agent-based workflow automation.
 
+## Preview
+
+![Chorus chat workspace screenshot](docs/assets/chorus-screenshot.png)
+
 ## Features
 
 - **Authentication & Security**: User registration, login, and two-factor authentication (2FA)
@@ -130,10 +134,6 @@ Chorus/
 - `GET /settings` - Get user settings
 - `PUT /settings` - Update user settings
 
-## Screenshots
-
-*Screenshots will be added here by the project team.*
-
 ## Configuration
 
 ### Environment Variables
@@ -158,7 +158,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-[TBD - License information will be added]
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
 
 ## Support
 
