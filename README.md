@@ -45,7 +45,12 @@ A real-time chat and task management platform built with Flutter and FastAPI, en
    ```
 
 2. **Configure environment variables**:
-   Create a `.env` file with the following variables:
+   Copy `.env.sample` to `.env` and update values as needed:
+   ```bash
+   cp server/.env.sample server/.env
+   ```
+   
+   The `.env` file should contain:
    ```
    ALLOWED_ORIGIN=http://localhost:3000
    SECRET_KEY=your-secret-key-here
@@ -138,19 +143,29 @@ Chorus/
 
 ### Environment Variables
 
+See `server/.env.sample` for a complete example of all required environment variables.
+
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `ALLOWED_ORIGIN` | CORS allowed origin | Required |
-| `SECRET_KEY` | JWT secret key | Required |
+| `ALLOWED_ORIGIN` | CORS allowed origin | * |
+| `SECRET_KEY` | JWT secret key | your-secret-key-here |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | Token expiration time | 30 |
-| `CONTEXT` | Execution context (project name) | chorus |
-| `DB_TYPE` | Database type (mysql/postgres/sqlite) | sqlite |
+| `CONTEXT` | Execution context (project path) | /chorus |
+| `DB_TYPE` | Database type (sqlite3/mysql/postgres) | sqlite3 |
 | `DB_PATH` | Database path (sqlite) | chorus.db |
-| `DB_HOST` | Database host (mysql/postgres) | localhost |
-| `DB_PORT` | Database port (mysql/postgres) | 5432 |
+| `DB_HOST` | Database host (mysql/postgres) | 127.0.0.1 |
+| `DB_PORT` | Database port (mysql/postgres) | 0 |
 | `DB_USER` | Database username (mysql/postgres) | |
 | `DB_PASSWORD` | Database password (mysql/postgres) | |
 | `DB_DATABASE` | Database name (mysql/postgres) | |
+| `DB_SCHEMA` | Database schema | |
+| `RATE_LIMIT_DEFAULT` | Default rate limit | 100/hour |
+| `RATE_LIMIT_LOGIN` | Login rate limit | 5/minute |
+| `RATE_LIMIT_UPLOAD` | Upload rate limit | 120/minute |
+| `RATE_LIMIT_DOWNLOAD` | Download rate limit | 120/minute |
+| `REDIS_HOST` | Redis server host | localhost |
+| `REDIS_PORT` | Redis server port | 6379 |
+| `REDIS_DB` | Redis database number | 0 |
 
 ## Contributing
 
