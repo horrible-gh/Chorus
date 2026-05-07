@@ -7,7 +7,9 @@ from .chat import chat
 from .agent import agent
 from .routing import routing
 from .worker import worker
+from .model import model as model_module
 from . import settings as settings_module
+from .auth import cli_auth as cli_auth_module
 from . import token as token_module
 from . import files as files_module
 from . import ws as ws_module
@@ -32,10 +34,10 @@ limiter = Limiter(
 # ── Lifespan ─────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """서버 시작/종료 시 실행되는 lifespan 핸들러."""
-    _bootstrap()          # 콘솔 인코딩 + PercentileTable 프리빌드
+    """Lifespan handler executed on server startup and shutdown."""
+    _bootstrap()          # console encoding + PercentileTable pre-build
     await start_poll_loop()
-    yield                  # ← 서버 가동 중
+    yield                  # ← server running
     await stop_poll_loop()
 
 
@@ -57,6 +59,8 @@ app.include_router(settings_module.router, prefix=f"{CONTEXT}/settings", tags=["
 app.include_router(token_module.router, prefix=f"{CONTEXT}/tokens", tags=["ChorusTokens"])
 app.include_router(files_module.router, prefix=f"{CONTEXT}/files", tags=["ChorusFiles"])
 app.include_router(ws_module.router, prefix=f"{CONTEXT}/ws", tags=["ChorusWS"])
+app.include_router(model_module.router, prefix=f"{CONTEXT}/models", tags=["ChorusModels"])
+app.include_router(cli_auth_module.router, prefix=f"{CONTEXT}/auth", tags=["ChorusAuth"])
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGIN,
