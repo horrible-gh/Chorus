@@ -29,7 +29,7 @@ redis_client = redis.Redis(
 
 @router.post("/")
 async def logout(token: str = Depends(oauth2_scheme)):
-    """ 현재 사용 중인 JWT 토큰을 블랙리스트에 등록 (로그아웃) """
+    """ Add the current JWT token to the blacklist (logout) """
     exp_time = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])["exp"]
     remaining_time = exp_time - datetime.now(timezone.utc).timestamp()
 

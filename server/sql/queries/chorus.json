@@ -51,5 +51,8 @@
     "insert_uploaded_file": "chorus/insert_uploaded_file.sql",
     "get_uploaded_file": "chorus/get_uploaded_file.sql",
     "list_last_n_messages": "chorus/list_last_n_messages.sql",
-    "list_last_n_messages_excl": "chorus/list_last_n_messages_excl.sql"
+    "list_last_n_messages_excl": "chorus/list_last_n_messages_excl.sql",
+    "get_model": "chorus/get_model.sql",
+    "insert_model": "chorus/insert_model.sql",
+    "list_agents_using_model": "chorus/list_agents_using_model.sql"
 }

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:file_selector/file_selector.dart';
 
 import '../models/agent_preset.dart';
+import '../models/model_registry.dart';
 import '../models/provider_token.dart';
 
 class AgentPresetForm extends StatefulWidget {
@@ -13,6 +14,7 @@ class AgentPresetForm extends StatefulWidget {
     this.preset,
     this.isSaving = false,
     this.enabled = true,
+    this.registryModels = const [],
   });
 
   final String ownerUserId;
@@ -20,6 +22,7 @@ class AgentPresetForm extends StatefulWidget {
   final bool isSaving;
   final bool enabled;
   final List<ProviderToken> tokens;
+  final List<ModelRegistry> registryModels;
   final ValueChanged<AgentPresetDraft> onSubmit;
 
   @override
@@ -44,6 +47,8 @@ class _AgentPresetFormState extends State<AgentPresetForm> {
   String _session = 'none';
   String? _providerTokenId;
   bool _useAllowAll = false;
+  String _authType = 'api_token';
+  String? _cliProvider;
 
   bool get _canEdit => widget.enabled && !widget.isSaving;
 
@@ -58,6 +63,11 @@ class _AgentPresetFormState extends State<AgentPresetForm> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.preset?.agentId != widget.preset?.agentId ||
         oldWidget.ownerUserId != widget.ownerUserId) {
+      _loadInitialValues();
+    } else if (widget.preset == null &&
+        oldWidget.registryModels.isEmpty &&
+        widget.registryModels.isNotEmpty) {
+      // Registry loaded after form init for new preset — re-pick DB default
       _loadInitialValues();
     }
   }
@@ -191,15 +201,22 @@ class _AgentPresetFormState extends State<AgentPresetForm> {
               ],
             ),
             const SizedBox(height: 12),
-            _TokenDropdown(
-              value: _providerTokenId,
+            _AuthSection(
+              authType: _authType,
+              cliProvider: _cliProvider,
+              providerTokenId: _providerTokenId,
               enabled: _canEdit,
               tokens: widget.tokens,
-              onChanged: (value) {
+              onAuthTypeChanged: (value) {
                 setState(() {
-                  _providerTokenId = value;
+                  _authType = value;
+                  if (value == 'cli') _providerTokenId = null;
                 });
               },
+              onCliProviderChanged: (value) =>
+                  setState(() => _cliProvider = value),
+              onTokenChanged: (value) =>
+                  setState(() => _providerTokenId = value),
             ),
             const SizedBox(height: 18),
             _RunnerSettings(
@@ -290,31 +307,57 @@ class _AgentPresetFormState extends State<AgentPresetForm> {
     );
   }
 
+  List<AgentModelOption> _optionsForRunner(String runner) {
+    final dbOptions = widget.registryModels
+        .where((m) => m.runner == runner)
+        .map((m) => AgentModelOption(
+              runner: m.runner,
+              modelName: m.modelName,
+              grade: m.grade,
+              isDefault: m.isDefault,
+            ))
+        .toList(growable: false);
+    if (dbOptions.isNotEmpty) return dbOptions;
+    return agentModelsForRunner(runner);
+  }
+
   List<AgentModelOption> get _modelOptions {
-    final options = agentModelsForRunner(_runner);
-    if (agentModelFor(_runner, _model) != null) {
-      return options;
-    }
+    final options = _optionsForRunner(_runner);
+    if (options.any((o) => o.modelName == _model)) return options;
     return [
-      AgentModelOption(
-        runner: _runner,
-        modelName: _model,
-        grade: _grade,
-      ),
+      AgentModelOption(runner: _runner, modelName: _model, grade: _grade),
       ...options,
     ];
   }
 
   void _loadInitialValues() {
     final preset = widget.preset;
-    final model = preset == null
-        ? agentDefaultModelForRunner('copilot')
-        : agentModelFor(preset.defaultRunner, preset.defaultModel) ??
-            AgentModelOption(
-              runner: preset.defaultRunner,
-              modelName: preset.defaultModel,
-              grade: preset.defaultGrade,
-            );
+    final String runner;
+    final String modelName;
+    final String grade;
+
+    if (preset == null) {
+      runner = 'copilot';
+      final dbDefault = widget.registryModels
+          .where((m) => m.runner == 'copilot' && m.isDefault)
+          .firstOrNull;
+      if (dbDefault != null) {
+        modelName = dbDefault.modelName;
+        grade = dbDefault.grade;
+      } else {
+        final fallback = agentDefaultModelForRunner('copilot');
+        modelName = fallback.modelName;
+        grade = fallback.grade;
+      }
+    } else {
+      runner = preset.defaultRunner;
+      modelName = preset.defaultModel;
+      final dbModel = widget.registryModels
+          .where((m) => m.runner == runner && m.modelName == modelName)
+          .firstOrNull;
+      grade = dbModel?.grade ?? preset.defaultGrade;
+    }
+
     final settings = preset?.settings ?? const AgentPresetSettings();
 
     _displayNameController.text = preset?.displayName ?? '';
@@ -325,9 +368,9 @@ class _AgentPresetFormState extends State<AgentPresetForm> {
     _allowedToolsController.text = settings.allowedTools;
     _workDirController.text = settings.workDir;
 
-    _runner = model.runner;
-    _model = model.modelName;
-    _grade = model.grade;
+    _runner = runner;
+    _model = modelName;
+    _grade = grade;
     _providerTokenId = settings.providerTokenId;
     _useAllowAll = settings.useAllowAll;
     _codexMode =
@@ -336,29 +379,45 @@ class _AgentPresetFormState extends State<AgentPresetForm> {
         ? settings.approvalMode
         : 'default';
     _session = _sessions.contains(settings.session) ? settings.session : 'none';
+    _authType =
+        _authTypes.contains(settings.authType) ? settings.authType : 'api_token';
+    _cliProvider = _cliProviderIds.contains(settings.cliProvider)
+        ? settings.cliProvider
+        : null;
     _formKey.currentState?.reset();
   }
 
   void _onRunnerChanged(String? value) {
-    if (value == null) {
-      return;
+    if (value == null) return;
+    final dbDefault = widget.registryModels
+        .where((m) => m.runner == value && m.isDefault)
+        .firstOrNull;
+    final String newModel;
+    final String newGrade;
+    if (dbDefault != null) {
+      newModel = dbDefault.modelName;
+      newGrade = dbDefault.grade;
+    } else {
+      final fallback = agentDefaultModelForRunner(value);
+      newModel = fallback.modelName;
+      newGrade = fallback.grade;
     }
-    final model = agentDefaultModelForRunner(value);
     setState(() {
       _runner = value;
-      _model = model.modelName;
-      _grade = model.grade;
+      _model = newModel;
+      _grade = newGrade;
     });
   }
 
   void _onModelChanged(String? value) {
-    if (value == null) {
-      return;
-    }
-    final option = agentModelFor(_runner, value);
+    if (value == null) return;
+    final dbModel = widget.registryModels
+        .where((m) => m.runner == _runner && m.modelName == value)
+        .firstOrNull;
+    final grade = dbModel?.grade ?? agentModelFor(_runner, value)?.grade ?? '';
     setState(() {
       _model = value;
-      _grade = option?.grade ?? '';
+      _grade = grade;
     });
   }
 
@@ -379,7 +438,7 @@ class _AgentPresetFormState extends State<AgentPresetForm> {
         systemPrompt: _systemPromptController.text.trim(),
         pinnedContext: _pinnedContextController.text.trim(),
         settings: AgentPresetSettings(
-          providerTokenId: _providerTokenId,
+          providerTokenId: _authType == 'cli' ? null : _providerTokenId,
           useAllowAll: _runner == 'copilot' && _useAllowAll,
           codexMode: _runner == 'codex' ? _codexMode : 'never',
           allowedTools:
@@ -387,6 +446,8 @@ class _AgentPresetFormState extends State<AgentPresetForm> {
           approvalMode: _runner == 'gemini' ? _approvalMode : 'default',
           workDir: _runner == 'codex' ? _workDirController.text.trim() : '',
           session: _session,
+          authType: _authType,
+          cliProvider: _authType == 'cli' ? _cliProvider : null,
         ),
       ),
     );
@@ -638,3 +699,148 @@ const _runners = ['copilot', 'codex', 'claude', 'gemini'];
 const _codexModes = ['never', 'full-auto'];
 const _approvalModes = ['default', 'auto_edit', 'yolo', 'sandbox_yolo'];
 const _sessions = ['none', 'continue'];
+const _authTypes = ['api_token', 'cli'];
+const _cliProviderIds = ['claude_cli', 'codex_cli', 'copilot', 'gcloud_adc'];
+
+class _AuthSection extends StatelessWidget {
+  const _AuthSection({
+    required this.authType,
+    required this.cliProvider,
+    required this.providerTokenId,
+    required this.enabled,
+    required this.tokens,
+    required this.onAuthTypeChanged,
+    required this.onCliProviderChanged,
+    required this.onTokenChanged,
+  });
+
+  final String authType;
+  final String? cliProvider;
+  final String? providerTokenId;
+  final bool enabled;
+  final List<ProviderToken> tokens;
+  final ValueChanged<String> onAuthTypeChanged;
+  final ValueChanged<String?> onCliProviderChanged;
+  final ValueChanged<String?> onTokenChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Row(
+            children: [
+              const Icon(Icons.security_outlined, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                'Auth type',
+                style: Theme.of(context).textTheme.labelLarge,
+              ),
+            ],
+          ),
+        ),
+        SegmentedButton<String>(
+          segments: const [
+            ButtonSegment(
+              value: 'api_token',
+              label: Text('API token'),
+              icon: Icon(Icons.key_outlined),
+            ),
+            ButtonSegment(
+              value: 'cli',
+              label: Text('CLI session'),
+              icon: Icon(Icons.terminal_outlined),
+            ),
+          ],
+          selected: {authType},
+          onSelectionChanged:
+              enabled ? (s) => onAuthTypeChanged(s.first) : null,
+          style: const ButtonStyle(
+            visualDensity: VisualDensity.compact,
+          ),
+        ),
+        const SizedBox(height: 12),
+        if (authType == 'api_token')
+          _TokenDropdown(
+            value: providerTokenId,
+            enabled: enabled,
+            tokens: tokens,
+            onChanged: onTokenChanged,
+          )
+        else ...[
+          DropdownButtonFormField<String?>(
+            key: ValueKey('cli-provider-$cliProvider'),
+            initialValue: cliProvider,
+            decoration: const InputDecoration(
+              labelText: 'CLI provider',
+              prefixIcon: Icon(Icons.account_tree_outlined),
+            ),
+            items: const [
+              DropdownMenuItem<String?>(
+                value: null,
+                child: Text('Select provider'),
+              ),
+              DropdownMenuItem<String?>(
+                value: 'claude_cli',
+                child: Text('Claude CLI'),
+              ),
+              DropdownMenuItem<String?>(
+                value: 'codex_cli',
+                child: Text('Codex CLI'),
+              ),
+              DropdownMenuItem<String?>(
+                value: 'copilot',
+                child: Text('Copilot'),
+              ),
+              DropdownMenuItem<String?>(
+                value: 'gcloud_adc',
+                child: Text('gcloud ADC'),
+              ),
+            ],
+            onChanged: enabled ? onCliProviderChanged : null,
+            validator: (value) =>
+                value == null ? 'CLI provider is required' : null,
+          ),
+          const SizedBox(height: 8),
+          _CliAuthHint(),
+        ],
+      ],
+    );
+  }
+}
+
+class _CliAuthHint extends StatelessWidget {
+  const _CliAuthHint();
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: colors.secondaryContainer.withOpacity(0.45),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(
+            Icons.info_outline,
+            size: 16,
+            color: colors.onSecondaryContainer,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'CLI session mode: uses the CLI login session of the account running the server. '
+              'Operates without an API token; for server administrators (owner/internal) only.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}

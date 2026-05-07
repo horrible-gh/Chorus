@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -18,6 +19,15 @@ from config import get_db_instance, get_sqloader_instance
 JST = timezone(timedelta(hours=9))
 SERVER_DIR = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+_LABELED_SECRET_RE = re.compile(
+    r"(?i)(\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|secret|password)\b\s*[:=]\s*)([^\s,;\"']{8,})"
+)
+_INLINE_SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bsk-[A-Za-z0-9][A-Za-z0-9_-]{12,}\b"), "[REDACTED_SK_KEY]"),
+    (re.compile(r"\bAIza[0-9A-Za-z\-_]{16,}\b"), "[REDACTED_API_KEY]"),
+    (re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,})\b"), "[REDACTED_TOKEN]"),
+)
 
 
 def now_iso() -> str:
@@ -34,6 +44,26 @@ def _json_load(value: Any, default: Any) -> Any:
     if isinstance(value, (dict, list)):
         return value
     return json.loads(value)
+
+
+def _strip_ansi_text(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    return _ANSI_ESCAPE_RE.sub("", value).strip()
+
+
+def _redact_secret_text(value: str) -> str:
+    redacted = _LABELED_SECRET_RE.sub(r"\1[REDACTED]", value)
+    for pattern, replacement in _INLINE_SECRET_PATTERNS:
+        redacted = pattern.sub(replacement, redacted)
+    return redacted
+
+
+def _subprocess_output_excerpt(value: Optional[str], limit: int = 500) -> str:
+    excerpt = _redact_secret_text(_strip_ansi_text(value))
+    if len(excerpt) <= limit:
+        return excerpt
+    return excerpt[: limit - 3].rstrip() + "..."
 
 
 _tx_local = threading.local()
@@ -53,6 +83,7 @@ class ChorusStore:
         "run": ("worker_runs", "run_id"),
         "tok": ("provider_tokens", "token_id"),
         "ufile": ("uploaded_files", "file_id"),
+        "mr": ("model_registry", "model_id"),
     }
 
     def __init__(self):
@@ -140,6 +171,15 @@ class ChorusStore:
             ("model_copilot_gpt_54_mini", "copilot", "gpt-5.4-mini", "0.33급", 1, 1, 2, 100),
             ("model_copilot_gpt_54", "copilot", "gpt-5.4", "1급", 1, 0, 4, 90),
             ("model_claude_sonnet_46", "copilot", "claude-sonnet-4.6", "1급", 1, 0, 5, 80),
+            ("model_claude_runner_sonnet_46", "claude", "claude-sonnet-4-6", "1급", 1, 0, 5, 80),
+            ("model_claude_haiku_45", "claude", "claude-haiku-4.5", "0.33급", 1, 1, 1, 100),
+            ("model_codex_runner_gpt55", "codex", "gpt-5.5", "1급", 1, 0, 6, 70),
+            ("model_codex_gpt_54_mini", "codex", "gpt-5.4-mini", "0.33급", 1, 1, 2, 100),
+            ("model_codex_gpt_53_codex", "codex", "gpt-5.3-codex", "1급", 1, 0, 5, 90),
+            ("model_codex_gpt_54", "codex", "gpt-5.4", "1급", 1, 0, 4, 90),
+            ("model_gemini_runner_31_pro", "gemini", "gemini-3.1-pro-preview", "1급", 1, 0, 6, 60),
+            ("model_gemini_3_flash", "gemini", "gemini-3-flash-preview", "0.33급", 1, 1, 2, 100),
+            ("model_gemini_31_flash_lite", "gemini", "gemini-3.1-flash-lite-preview", "0.33급", 1, 0, 2, 100),
         ]
         agents = [
             ("agent_architect_001", "Architect", "architecture", "0.33급"),
@@ -409,7 +449,117 @@ class ChorusStore:
             rows = self._fetch_all(self._sql("list_models"))
         return [self._model_from_row(row) for row in rows]
 
-    # ── routing_decisions ─────────────────────────────────────────────────
+    def list_models_filtered(self, runner: Optional[str] = None, active_only: bool = False) -> list[dict]:
+        if runner is not None:
+            base = "SELECT * FROM model_registry WHERE runner = ?"
+            if active_only:
+                base += " AND is_active = 1"
+            base += " ORDER BY priority DESC, estimated_cost_rank"
+            rows = self._fetch_all(base, [runner])
+        elif active_only:
+            rows = self._fetch_all(self._sql("list_models_active"))
+        else:
+            rows = self._fetch_all(self._sql("list_models"))
+        return [self._model_from_row(row) for row in rows]
+
+    def get_model(self, model_id: str) -> Optional[dict]:
+        row = self._fetch_one(self._sql("get_model"), [model_id])
+        return self._model_from_row(row)
+
+    def insert_model(self, data: dict) -> dict:
+        existing = self._fetch_one(
+            "SELECT model_id FROM model_registry WHERE runner = ? AND model_name = ?",
+            [data["runner"], data["model_name"]],
+        )
+        if existing:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "model already exists",
+                    "detail": f"runner={data['runner']}, model_name={data['model_name']}",
+                },
+            )
+        model_id = self.next_id("mr")
+        now = now_iso()
+        provider_json = (
+            _json_dump(data["provider_options_json"])
+            if data.get("provider_options_json") is not None
+            else None
+        )
+        with self.transaction():
+            if data.get("is_default"):
+                self._execute(
+                    "UPDATE model_registry SET is_default = 0, updated_at = ? WHERE runner = ? AND is_default = 1",
+                    [now, data["runner"]],
+                )
+            self._execute(
+                self._sql("insert_model"),
+                [
+                    model_id,
+                    data["runner"],
+                    data["model_name"],
+                    data["grade"],
+                    1,
+                    1 if data.get("is_default") else 0,
+                    data["estimated_cost_rank"],
+                    data.get("priority", 0),
+                    data.get("max_context_tokens"),
+                    provider_json,
+                    now,
+                    now,
+                ],
+            )
+        return self.get_model(model_id)
+
+    def update_model_registry(self, model_id: str, updates: dict) -> dict:
+        row = self.get_model(model_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail={"error": "model not found"})
+        warning = None
+        now = now_iso()
+        _ALLOWED = {
+            "grade", "is_active", "is_default",
+            "estimated_cost_rank", "priority",
+            "max_context_tokens", "provider_options_json",
+        }
+        sets: list[str] = []
+        values: list[Any] = []
+        for key, value in updates.items():
+            if key not in _ALLOWED:
+                continue
+            if key == "provider_options_json":
+                values.append(_json_dump(value) if value is not None else None)
+            elif key in ("is_active", "is_default"):
+                values.append(1 if value else 0)
+            else:
+                values.append(value)
+            sets.append(f"{key} = ?")
+        if updates.get("is_active") is False:
+            agents_using = self._fetch_all(
+                self._sql("list_agents_using_model"),
+                [row["runner"], row["model_name"]],
+            )
+            if agents_using:
+                names = ", ".join(a["display_name"] for a in agents_using)
+                warning = f"{len(agents_using)} agent preset(s) are using this model: [{names}]"
+        with self.transaction():
+            if updates.get("is_default"):
+                self._execute(
+                    "UPDATE model_registry SET is_default = 0, updated_at = ? WHERE runner = ? AND is_default = 1",
+                    [now, row["runner"]],
+                )
+            if sets:
+                sets.append("updated_at = ?")
+                values.append(now)
+                values.append(model_id)
+                self._execute(
+                    f"UPDATE model_registry SET {', '.join(sets)} WHERE model_id = ?",
+                    values,
+                )
+        result = self.get_model(model_id)
+        if warning:
+            result["warning"] = warning
+        return result
 
     def _routing_from_row(self, row: Optional[dict]) -> Optional[dict]:
         if row is None:
@@ -1059,6 +1209,41 @@ def _build_chat_history(room_id: str, exclude_message_id: str) -> List[dict]:
     return history
 
 
+RUNNER_TOKEN_ENV: dict[str, tuple[str, str]] = {
+    "gemini": ("google", "GEMINI_API_KEY"),
+    "claude": ("anthropic", "ANTHROPIC_API_KEY"),
+    "codex": ("openai", "OPENAI_API_KEY"),
+    "copilot": ("copilot", "COPILOT_GITHUB_TOKEN"),
+}
+
+
+def _build_subprocess_env(runner: str, provider_token_id: Optional[str] = None) -> dict:
+    env = os.environ.copy()
+    if not provider_token_id:
+        return env
+    expected = RUNNER_TOKEN_ENV.get(runner)
+    if expected is None:
+        return env
+    expected_provider, env_key = expected
+    token = STORE.get_token(provider_token_id)
+    if not token:
+        raise HTTPException(status_code=400, detail={"code": "PROVIDER_TOKEN_NOT_FOUND"})
+    if token.get("status") != "active":
+        raise HTTPException(status_code=400, detail={"code": "PROVIDER_TOKEN_INACTIVE"})
+    if token.get("provider") != expected_provider:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "PROVIDER_TOKEN_MISMATCH",
+                "runner": runner,
+                "expected_provider": expected_provider,
+                "actual_provider": token.get("provider"),
+            },
+        )
+    env[env_key] = token["token_value"]
+    return env
+
+
 def _call_ai_sync(
     runner: str,
     model: str,
@@ -1066,12 +1251,13 @@ def _call_ai_sync(
     history: List[dict],
     user_text: str,
     pinned_context: Optional[str] = None,
+    provider_token_id: Optional[str] = None,
 ) -> str:
     """
     Call AI CLI synchronously and return the response text.
 
     Method A (Q005 approved): subprocess CLI call.
-    runner CLI (copilot/claude) must be on PATH and authenticated in the server environment.
+    runner CLI (copilot/claude/gemini/codex) must be on PATH and authenticated in the server environment.
     """
     parts: List[str] = []
     if system_prompt:
@@ -1084,8 +1270,7 @@ def _call_ai_sync(
     parts.append(f"User: {user_text}")
     prompt = "\n\n".join(parts)
 
-    # Strip ANSI escape codes helper
-    _ansi = re.compile(r"\x1b\[[0-9;]*m")
+    env = _build_subprocess_env(runner, provider_token_id)
 
     if runner == "copilot":
         executable = shutil.which("copilot") or "copilot"
@@ -1097,8 +1282,9 @@ def _call_ai_sync(
             encoding="utf-8",
             timeout=120,
             cwd=PROJECT_ROOT,
+            env=env,
         )
-        output = _ansi.sub("", result.stdout).strip()
+        output = _strip_ansi_text(result.stdout)
 
     elif runner == "claude":
         executable = shutil.which("claude") or "claude"
@@ -1110,8 +1296,9 @@ def _call_ai_sync(
             encoding="utf-8",
             timeout=120,
             cwd=PROJECT_ROOT,
+            env=env,
         )
-        output = _ansi.sub("", result.stdout).strip()
+        output = _strip_ansi_text(result.stdout)
 
     elif runner == "gemini":
         executable = shutil.which("gemini") or "gemini"
@@ -1123,8 +1310,31 @@ def _call_ai_sync(
             encoding="utf-8",
             timeout=120,
             cwd=PROJECT_ROOT,
+            env=env,
         )
-        output = _ansi.sub("", result.stdout).strip()
+        output = _strip_ansi_text(result.stdout)
+
+    elif runner == "codex":
+        executable = shutil.which("codex") or "codex"
+        result = subprocess.run(
+            [
+                executable,
+                "-C", str(PROJECT_ROOT),
+                "--ask-for-approval", "never",
+                "--sandbox", "workspace-write",
+                "exec",
+                "--model", model,
+                "-",
+            ],
+            input=prompt,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=300,
+            cwd=PROJECT_ROOT,
+            env=env,
+        )
+        output = _strip_ansi_text(result.stdout)
 
     else:
         raise HTTPException(
@@ -1133,15 +1343,31 @@ def _call_ai_sync(
         )
 
     if result.returncode != 0:
+        _stderr_lower = (result.stderr or "").lower()
+        if any(kw in _stderr_lower for kw in ("unknown model", "model not found", "invalid model specification")):
+            _error_category = "model_error"
+        elif any(kw in _stderr_lower for kw in ("authentication failed", "invalid api key", "401 unauthorized")):
+            _error_category = "auth_error"
+        elif any(kw in _stderr_lower for kw in ("insufficient credits", "rate limit exceeded", "429 too many requests", "quota exceeded")):
+            _error_category = "credit_error"
+        else:
+            _error_category = "unknown"
+        failure_detail = {
+            "code": "AI_SUBPROCESS_FAILED",
+            "runner": runner,
+            "model": model,
+            "returncode": result.returncode,
+            "stderr_excerpt": _subprocess_output_excerpt(result.stderr),
+            "stdout_excerpt": _subprocess_output_excerpt(result.stdout),
+            "error_category": _error_category,
+        }
+        logger.error(
+            f"[_call_ai_sync] subprocess failed runner={runner!r} model={model!r} "
+            f"returncode={result.returncode} detail={failure_detail!r}"
+        )
         raise HTTPException(
             status_code=502,
-            detail={
-                "code": "AI_SUBPROCESS_FAILED",
-                "runner": runner,
-                "model": model,
-                "returncode": result.returncode,
-                "stderr": result.stderr.strip()[:500] if result.stderr else "",
-            },
+            detail=failure_detail,
         )
 
     if not output:
@@ -1169,7 +1395,7 @@ def send_message_sync(room_id: str, payload: dict) -> tuple[dict, List[dict]]:
     Restrictions (T012 scope): public messages only; whisper, compression,
     one_shot context modes, and Worker Loop are not used here.
     """
-    logger.debug(f"[send_message_sync] 진입 — room_id={room_id!r} delivery_mode={payload.get('delivery_mode')!r}")
+    logger.debug(f"[send_message_sync] enter — room_id={room_id!r} delivery_mode={payload.get('delivery_mode')!r}")
     from modules.routing import select_model
 
     # ── Phase 1: save user message and prepare routing (inside transaction) ──
@@ -1222,6 +1448,8 @@ def send_message_sync(room_id: str, payload: dict) -> tuple[dict, List[dict]]:
                 "task_intent": "agent_response",
                 "risk_hint": "low",
                 "preferred_runner": agent.get("default_runner") or "copilot",
+                "default_model": agent.get("default_model"),
+                "default_grade": agent.get("default_grade"),
                 "allowed_grade_min": "0급",
                 "allowed_grade_max": "1급",
                 "title": f"Chat response for {user_message['message_id']}",
@@ -1237,6 +1465,9 @@ def send_message_sync(room_id: str, payload: dict) -> tuple[dict, List[dict]]:
     # ── Phase 2: build history and call AI (outside transaction) ──
     history = _build_chat_history(room_id, user_message["message_id"])
 
+    agent_settings = _json_load(agent.get("settings_json"), {})
+    provider_token_id = agent_settings.get("provider_token_id")
+
     ai_text = _call_ai_sync(
         runner=routing_decision["selected_runner"],
         model=routing_decision["selected_model"],
@@ -1244,6 +1475,7 @@ def send_message_sync(room_id: str, payload: dict) -> tuple[dict, List[dict]]:
         history=history,
         user_text=payload["content"]["text"],
         pinned_context=agent.get("pinned_context"),
+        provider_token_id=provider_token_id,
     )
 
     # ── Phase 3: save AI response (inside transaction) ──
@@ -1268,12 +1500,7 @@ def send_message_sync(room_id: str, payload: dict) -> tuple[dict, List[dict]]:
             }
         )
 
-    task_info: List[dict] = [
-        {
-            "task_id": routing_decision["routing_id"],
-            "agent_id": agent["agent_id"],
-            "status": "done",
-            "response_message_id": agent_message["message_id"],
-        }
-    ]
+    # The sync path does not create real worker tasks, so created_tasks always returns an empty list.
+    # Returning routing_id (route_*) as task_id would cause the client to repeatedly poll /worker/tasks/route_*.
+    task_info: List[dict] = []
     return user_message, task_info

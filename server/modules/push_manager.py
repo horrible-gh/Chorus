@@ -46,7 +46,7 @@ class PushManager:
         return len(self._connections.get(room_id, []))
 
     async def publish(self, room_id: str, payload: dict) -> None:
-        """특정 room의 모든 구독자에게 이벤트를 발행한다."""
+        """Publish an event to all subscribers of the given room."""
         async with self._lock:
             connections = list(self._connections.get(room_id, []))
 

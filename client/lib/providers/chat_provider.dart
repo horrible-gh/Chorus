@@ -205,13 +205,18 @@ class ChatProvider extends ChangeNotifier {
       _messages = [..._messages, result.message];
       _touchSelectedRoom(result.message.createdAt);
       _isSending = false;
-      if (result.createdTasks.isNotEmpty) {
-        _pendingTaskIds = result.createdTasks.map((t) => t.taskId).toSet();
+      // route_* IDs are not worker tasks; only IDs with a task_ prefix are registered as pending.
+      final workerTaskIds = result.createdTasks
+          .map((t) => t.taskId)
+          .where((id) => id.startsWith('task_'))
+          .toSet();
+      if (workerTaskIds.isNotEmpty) {
+        _pendingTaskIds = workerTaskIds;
         _pendingTasksCompleted = 0;
         _hasPendingTasks = true;
       }
       notifyListeners();
-      if (result.createdTasks.isNotEmpty) {
+      if (workerTaskIds.isNotEmpty) {
         unawaited(_pollAgentResponses(roomId));
       }
       return result;
@@ -239,8 +244,13 @@ class ChatProvider extends ChangeNotifier {
           roomId: roomId,
           viewerUserId: userId,
         );
+        final completedTaskIds = _completedPendingTaskIdsFromMessages(messages);
+        final pendingTaskIds = _pendingTaskIds.difference(completedTaskIds);
+        if (pendingTaskIds.isNotEmpty) {
+          completedTaskIds.addAll(await _failedPendingTaskIds(pendingTaskIds));
+        }
         _messages = messages;
-        _recalculatePending(messages);
+        _applyPendingTaskProgress(completedTaskIds);
         notifyListeners();
       } catch (error, stackTrace) {
         debugPrint('[ChatProvider._pollAgentResponses] $error');
@@ -263,8 +273,14 @@ class ChatProvider extends ChangeNotifier {
   /// Counts unique tasks whose sourceTaskId is in _pendingTaskIds,
   /// and updates _pendingTasksCompleted. Clears pending state when all are done.
   void _recalculatePending(List<ChatMessage> messages) {
-    if (_pendingTaskIds.isEmpty) return;
-    final completedIds = messages
+    _applyPendingTaskProgress(_completedPendingTaskIdsFromMessages(messages));
+  }
+
+  Set<String> _completedPendingTaskIdsFromMessages(List<ChatMessage> messages) {
+    if (_pendingTaskIds.isEmpty) {
+      return <String>{};
+    }
+    return messages
         .where(
           (m) =>
               m.sourceTaskId != null &&
@@ -272,7 +288,41 @@ class ChatProvider extends ChangeNotifier {
         )
         .map((m) => m.sourceTaskId!)
         .toSet();
-    _pendingTasksCompleted = completedIds.length;
+  }
+
+  Future<Set<String>> _failedPendingTaskIds(Set<String> pendingTaskIds) async {
+    if (pendingTaskIds.isEmpty) {
+      return const <String>{};
+    }
+    // IDs without a task_ prefix are not queried against the worker task endpoint.
+    final taskIds = pendingTaskIds
+        .where((id) => id.startsWith('task_'))
+        .toList(growable: false);
+    if (taskIds.isEmpty) {
+      return const <String>{};
+    }
+    final tasks = await Future.wait(taskIds.map(_service.getTask));
+    final failedTaskIds = <String>{};
+    for (var i = 0; i < tasks.length; i++) {
+      final task = tasks[i];
+      final status = task['status']?.toString();
+      final failureCode = task['failure_code']?.toString();
+      final failureText = task['failure_text']?.toString() ?? '';
+      if (status == 'failed' &&
+          failureCode == 'AI_CALL_FAILED' &&
+          !failureText.contains('AI_SUBPROCESS_FAILED')) {
+        failedTaskIds.add(taskIds[i]);
+      }
+    }
+    return failedTaskIds;
+  }
+
+  void _applyPendingTaskProgress(Set<String> completedTaskIds) {
+    if (_pendingTaskIds.isEmpty) {
+      return;
+    }
+    _pendingTasksCompleted =
+        completedTaskIds.where(_pendingTaskIds.contains).length;
     if (_pendingTasksCompleted >= _pendingTaskIds.length) {
       _hasPendingTasks = false;
       _pendingTaskIds = const {};
@@ -412,10 +462,10 @@ class ChatProvider extends ChangeNotifier {
     _participants = participants;
   }
 
-  // ── WebSocket push 헬퍼 ──────────────────────────────────────────────────
+  // ── WebSocket push helpers ──────────────────────────────────────────────────
 
   static String _buildWsBaseUrl() {
-    // AppConfig.baseUrl 예: http://localhost:8018/chorus
+    // AppConfig.baseUrl e.g. http://localhost:8018/chorus
     // → ws://localhost:8018/chorus
     const baseUrl = String.fromEnvironment(
       'CHORUS_API_BASE_URL',

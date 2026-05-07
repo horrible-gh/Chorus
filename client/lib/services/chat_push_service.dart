@@ -5,7 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
-/// WebSocket 연결 상태.
+/// WebSocket connection status.
 enum ChatPushStatus {
   pushIdle,
   pushConnecting,
@@ -15,14 +15,14 @@ enum ChatPushStatus {
   pushFallback,
 }
 
-/// WebSocket 기반 서버 푸시 구독 서비스.
+/// WebSocket-based server push subscription service.
 ///
-/// room 진입 시 [connect]를 호출하고, room 이탈/변경 시 [disconnect]를 호출한다.
-/// [onMessageCompleted]에 콜백을 등록하면 message_completed 이벤트 수신 시
-/// 해당 room_id를 인수로 콜백이 호출된다.
+/// Call [connect] when entering a room, and [disconnect] when leaving or switching rooms.
+/// Register a callback on [onMessageCompleted] to be notified when a message_completed event is received;
+/// the callback is invoked with the room_id as its argument.
 ///
-/// 연결 실패 시 지수 백오프(최대 5회)로 재연결을 시도하고,
-/// 최대 재시도 초과 시 [ChatPushStatus.pushFallback]으로 전환한다.
+/// On connection failure, reconnects with exponential backoff (up to 5 retries);
+/// switches to [ChatPushStatus.pushFallback] when the maximum retries are exceeded.
 class ChatPushService extends ChangeNotifier {
   ChatPushService({required String wsBaseUrl}) : _wsBaseUrl = wsBaseUrl;
 

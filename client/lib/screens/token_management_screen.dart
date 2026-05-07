@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../models/cli_auth.dart';
 import '../models/provider_token.dart';
 import '../providers/auth_provider.dart';
+import '../services/cli_auth_service.dart';
 import '../services/provider_token_service.dart';
 import '../widgets/token_form.dart';
 import '../widgets/token_list_item.dart';
@@ -14,7 +16,11 @@ class TokenManagementScreen extends StatefulWidget {
   State<TokenManagementScreen> createState() => _TokenManagementScreenState();
 }
 
-class _TokenManagementScreenState extends State<TokenManagementScreen> {
+class _TokenManagementScreenState extends State<TokenManagementScreen>
+    with SingleTickerProviderStateMixin {
+  late final TabController _tabController;
+
+  // ── API Token tab state ──────────────────────────────────────────
   ProviderTokenService? _service;
   List<ProviderToken> _tokens = const [];
   String? _selectedTokenId;
@@ -22,6 +28,13 @@ class _TokenManagementScreenState extends State<TokenManagementScreen> {
   bool _isLoading = true;
   bool _isSaving = false;
   String? _error;
+
+  // ── CLI Auth tab state ───────────────────────────────────────────
+  CliAuthService? _cliService;
+  List<CliProviderStatus> _cliStatuses = const [];
+  bool _cliLoading = false;
+  String? _cliError;
+  bool _cliLoaded = false;
 
   ProviderToken? get _selectedToken {
     if (_selectedTokenId == null) return null;
@@ -32,11 +45,32 @@ class _TokenManagementScreenState extends State<TokenManagementScreen> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(length: 2, vsync: this);
+    _tabController.addListener(_onTabChanged);
+  }
+
+  @override
+  void dispose() {
+    _tabController.removeListener(_onTabChanged);
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  void _onTabChanged() {
+    if (_tabController.index == 1 && !_cliLoaded) {
+      _loadCliStatus();
+    }
+  }
+
+  @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     final auth = context.read<AuthProvider>();
     if (_service == null) {
       _service = ProviderTokenService(auth.dio);
+      _cliService = CliAuthService(auth.dio);
       _loadTokens();
     }
   }
@@ -54,62 +88,147 @@ class _TokenManagementScreenState extends State<TokenManagementScreen> {
           IconButton(
             tooltip: 'Refresh',
             icon: const Icon(Icons.refresh),
-            onPressed: _isLoading ? null : _loadTokens,
+            onPressed: () {
+              if (_tabController.index == 0) {
+                if (!_isLoading) _loadTokens();
+              } else {
+                if (!_cliLoading) _loadCliStatus();
+              }
+            },
           ),
         ],
+        bottom: TabBar(
+          controller: _tabController,
+          tabs: const [
+            Tab(text: 'API Token'),
+            Tab(text: 'CLI Auth'),
+          ],
+        ),
       ),
       body: userId.isEmpty
           ? const _EmptyState(
               icon: Icons.lock_outline,
               title: 'Sign in required',
             )
-          : LayoutBuilder(
-              builder: (context, constraints) {
-                final compact = constraints.maxWidth < 900;
-                final listPane = _TokenListPane(
-                  tokens: _tokens,
-                  selectedTokenId: _selectedTokenId,
-                  isLoading: _isLoading,
-                  error: _error,
-                  onNew: _startCreating,
-                  onRetry: _loadTokens,
-                  onSelect: _selectToken,
-                  onArchive: _confirmArchive,
-                );
-                final formPane = TokenForm(
-                  key: ValueKey(
-                    _isCreating ? 'new' : selectedToken?.tokenId ?? 'new',
-                  ),
-                  ownerUserId: userId,
-                  token: _isCreating ? null : selectedToken,
-                  enabled: editingEnabled,
-                  isSaving: _isSaving,
-                  onSubmit: _saveToken,
-                );
-
-                if (compact) {
-                  return Column(
-                    children: [
-                      Expanded(child: listPane),
-                      const Divider(height: 1),
-                      SizedBox(
-                        height: 380,
-                        child: formPane,
+          : TabBarView(
+              controller: _tabController,
+              children: [
+                // ── Tab 1: API Token ──
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final compact = constraints.maxWidth < 900;
+                    final listPane = _TokenListPane(
+                      tokens: _tokens,
+                      selectedTokenId: _selectedTokenId,
+                      isLoading: _isLoading,
+                      error: _error,
+                      onNew: _startCreating,
+                      onRetry: _loadTokens,
+                      onSelect: _selectToken,
+                      onArchive: _confirmArchive,
+                    );
+                    final formPane = TokenForm(
+                      key: ValueKey(
+                        _isCreating ? 'new' : selectedToken?.tokenId ?? 'new',
                       ),
-                    ],
-                  );
-                }
-                return Row(
-                  children: [
-                    SizedBox(width: 360, child: listPane),
-                    const VerticalDivider(width: 1),
-                    Expanded(child: formPane),
-                  ],
-                );
-              },
+                      ownerUserId: userId,
+                      token: _isCreating ? null : selectedToken,
+                      enabled: editingEnabled,
+                      isSaving: _isSaving,
+                      onSubmit: _saveToken,
+                    );
+
+                    if (compact) {
+                      return Column(
+                        children: [
+                          Expanded(child: listPane),
+                          const Divider(height: 1),
+                          SizedBox(height: 380, child: formPane),
+                        ],
+                      );
+                    }
+                    return Row(
+                      children: [
+                        SizedBox(width: 360, child: listPane),
+                        const VerticalDivider(width: 1),
+                        Expanded(child: formPane),
+                      ],
+                    );
+                  },
+                ),
+                // ── Tab 2: CLI Auth ──
+                _CliAuthTab(
+                  statuses: _cliStatuses,
+                  isLoading: _cliLoading,
+                  error: _cliError,
+                  onRefresh: _loadCliStatus,
+                  onLogin: _cliLogin,
+                  onLogout: _cliLogout,
+                ),
+              ],
             ),
     );
   }
+
+  // ── CLI Auth tab helpers ─────────────────────────────────────────
+
+  Future<void> _loadCliStatus() async {
+    setState(() {
+      _cliLoading = true;
+      _cliError = null;
+    });
+    try {
+      final statuses = await _cliService!.getCliStatus();
+      if (mounted) {
+        setState(() {
+          _cliStatuses = statuses;
+          _cliLoading = false;
+          _cliLoaded = true;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _cliError = 'Failed to load CLI status.';
+          _cliLoading = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _cliLogin(String provider) async {
+    try {
+      final response = await _cliService!.cliLogin(provider);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(response.message)),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Login failed: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _cliLogout(String provider) async {
+    try {
+      await _cliService!.cliLogout(provider);
+      if (mounted) {
+        await _loadCliStatus();
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Logout failed: $e')),
+        );
+      }
+    }
+  }
+
+  // ── API Token tab helpers ────────────────────────────────────────
 
   Future<void> _loadTokens() async {
     final userId = context.read<AuthProvider>().user?.userId ?? '';
@@ -347,6 +466,192 @@ class _EmptyState extends StatelessWidget {
           Text(title, style: Theme.of(context).textTheme.bodyMedium),
           if (action != null) ...[const SizedBox(height: 8), action!],
         ],
+      ),
+    );
+  }
+}
+
+// ── CLI Auth tab ─────────────────────────────────────────────────────────────
+
+class _CliAuthTab extends StatelessWidget {
+  const _CliAuthTab({
+    required this.statuses,
+    required this.isLoading,
+    required this.error,
+    required this.onRefresh,
+    required this.onLogin,
+    required this.onLogout,
+  });
+
+  final List<CliProviderStatus> statuses;
+  final bool isLoading;
+  final String? error;
+  final VoidCallback onRefresh;
+  final ValueChanged<String> onLogin;
+  final ValueChanged<String> onLogout;
+
+  static const _providerLabels = {
+    'claude_cli': 'Claude CLI',
+    'codex_cli': 'Codex CLI',
+    'copilot': 'Copilot',
+    'gcloud_adc': 'gcloud ADC',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    if (isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (error != null) {
+      return _EmptyState(
+        icon: Icons.error_outline,
+        title: error!,
+        action: TextButton(onPressed: onRefresh, child: const Text('Retry')),
+      );
+    }
+    if (statuses.isEmpty) {
+      return _EmptyState(
+        icon: Icons.terminal,
+        title: 'No CLI status available',
+        action: TextButton(onPressed: onRefresh, child: const Text('Refresh')),
+      );
+    }
+
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        for (final status in statuses)
+          _CliProviderRow(
+            status: status,
+            label: _providerLabels[status.provider] ?? status.provider,
+            onLogin: () => onLogin(status.provider),
+            onLogout: () => onLogout(status.provider),
+          ),
+        const SizedBox(height: 24),
+        const _CliAuthNote(),
+      ],
+    );
+  }
+}
+
+class _CliProviderRow extends StatelessWidget {
+  const _CliProviderRow({
+    required this.status,
+    required this.label,
+    required this.onLogin,
+    required this.onLogout,
+  });
+
+  final CliProviderStatus status;
+  final String label;
+  final VoidCallback onLogin;
+  final VoidCallback onLogout;
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Row(
+          children: [
+            Expanded(
+              flex: 2,
+              child: Text(
+                label,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w500,
+                    ),
+              ),
+            ),
+            Expanded(
+              flex: 2,
+              child: _StatusBadge(status: status.status),
+            ),
+            Expanded(
+              flex: 3,
+              child: Text(
+                _formatCheckedAt(status.checkedAt),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+              ),
+            ),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                OutlinedButton(
+                  onPressed: onLogin,
+                  child: const Text('Login'),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton(
+                  onPressed: status.logoutSupported ? onLogout : null,
+                  child: const Text('Logout'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _formatCheckedAt(String iso) {
+    try {
+      final dt = DateTime.parse(iso);
+      return '${dt.hour.toString().padLeft(2, '0')}:'
+          '${dt.minute.toString().padLeft(2, '0')}:'
+          '${dt.second.toString().padLeft(2, '0')}';
+    } catch (_) {
+      return iso;
+    }
+  }
+}
+
+class _StatusBadge extends StatelessWidget {
+  const _StatusBadge({required this.status});
+
+  final String status;
+
+  @override
+  Widget build(BuildContext context) {
+    final (label, color) = switch (status) {
+      'logged_in' => ('Logged In', Colors.green),
+      'logged_out' => ('Logged Out', Colors.red),
+      'active' => ('Active', Colors.green),
+      'inactive' => ('Inactive', Colors.red),
+      _ => ('Unknown', Colors.grey),
+    };
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(Icons.circle, size: 10, color: color),
+        const SizedBox(width: 6),
+        Text(label, style: Theme.of(context).textTheme.bodySmall),
+      ],
+    );
+  }
+}
+
+class _CliAuthNote extends StatelessWidget {
+  const _CliAuthNote();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(
+        'CLI login is executed based on the server account (owner/internal only).\n'
+        'Clicking the Login button executes the CLI login command on the server and starts the OAuth flow in the server\'s local browser.',
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
       ),
     );
   }

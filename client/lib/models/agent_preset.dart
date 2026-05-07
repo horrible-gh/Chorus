@@ -64,6 +64,8 @@ class AgentPresetSettings {
     this.approvalMode = 'default',
     this.workDir = '',
     this.session = 'none',
+    this.authType = 'api_token',
+    this.cliProvider,
   });
 
   final String? providerTokenId;
@@ -73,6 +75,12 @@ class AgentPresetSettings {
   final String approvalMode;
   final String workDir;
   final String session;
+  /// Determines which authentication method the agent uses.
+  /// Valid values: 'api_token' | 'cli'
+  final String authType;
+  /// Required when [authType] is 'cli'.
+  /// Valid values: 'claude_cli' | 'codex_cli' | 'copilot' | 'gcloud_adc'
+  final String? cliProvider;
 
   factory AgentPresetSettings.fromJson(Map<String, dynamic> json) {
     return AgentPresetSettings(
@@ -83,6 +91,8 @@ class AgentPresetSettings {
       approvalMode: _string(json['approval_mode'], fallback: 'default'),
       workDir: _string(json['work_dir']),
       session: _string(json['session'], fallback: 'none'),
+      authType: _string(json['auth_type'], fallback: 'api_token'),
+      cliProvider: _nullableString(json['cli_provider']),
     );
   }
 
@@ -95,6 +105,8 @@ class AgentPresetSettings {
       'approval_mode': approvalMode,
       'work_dir': workDir,
       'session': session,
+      'auth_type': authType,
+      'cli_provider': cliProvider,
     };
   }
 }

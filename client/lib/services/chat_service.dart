@@ -54,6 +54,12 @@ class ChatService {
     return messages.map((item) => ChatMessage.fromJson(_map(item))).toList();
   }
 
+  Future<Map<String, dynamic>> getTask(String taskId) async {
+    final response =
+        await _dio.get<Map<String, dynamic>>('/worker/tasks/$taskId');
+    return _map(response.data?['task']);
+  }
+
   Future<MessageSendResult> sendMessage({
     required String roomId,
     required String userId,

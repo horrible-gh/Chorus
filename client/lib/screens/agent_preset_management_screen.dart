@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../models/agent_preset.dart';
+import '../models/model_registry.dart';
 import '../models/provider_token.dart';
 import '../providers/auth_provider.dart';
 import '../services/agent_preset_service.dart';
+import '../services/model_registry_service.dart';
 import '../services/provider_token_service.dart';
 import '../widgets/agent_preset_form.dart';
 import '../widgets/agent_preset_list_item.dart';
@@ -21,8 +23,10 @@ class _AgentPresetManagementScreenState
     extends State<AgentPresetManagementScreen> {
   AgentPresetService? _service;
   ProviderTokenService? _tokenService;
+  ModelRegistryService? _registryService;
   List<AgentPreset> _presets = const [];
   List<ProviderToken> _tokens = const [];
+  List<ModelRegistry> _registryModels = const [];
   String? _selectedAgentId;
   bool _isCreating = true;
   bool _isLoading = true;
@@ -49,8 +53,10 @@ class _AgentPresetManagementScreenState
     if (_service == null) {
       _service = AgentPresetService(auth.dio);
       _tokenService = ProviderTokenService(auth.dio);
+      _registryService = ModelRegistryService(auth.dio);
       _loadPresets();
       _loadTokens();
+      _loadRegistryModels();
     }
   }
 
@@ -103,6 +109,7 @@ class _AgentPresetManagementScreenState
                   enabled: editingEnabled,
                   isSaving: _isSaving,
                   tokens: _tokens,
+                  registryModels: _registryModels,
                   onSubmit: _savePreset,
                 );
 
@@ -192,6 +199,15 @@ class _AgentPresetManagementScreenState
       if (mounted) setState(() => _tokens = tokens);
     } catch (_) {
       // Token load failure, maintain empty list
+    }
+  }
+
+  Future<void> _loadRegistryModels() async {
+    try {
+      final models = await _registryService!.listModels(activeOnly: true);
+      if (mounted) setState(() => _registryModels = models);
+    } catch (_) {
+      // Registry load failure — form falls back to hardcoded options
     }
   }
 

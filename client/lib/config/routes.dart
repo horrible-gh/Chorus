@@ -5,6 +5,7 @@ import '../screens/agent_preset_management_screen.dart';
 import '../screens/login/login_screen.dart';
 import '../screens/login/totp_verify_screen.dart';
 import '../screens/main/main_screen.dart';
+import '../screens/model_management_screen.dart';
 import '../screens/settings_screen.dart';
 import '../screens/splash_screen.dart';
 import '../screens/token_management_screen.dart';
@@ -17,6 +18,7 @@ class AppRoutes {
   static const settings = '/settings';
   static const agentPresets = '/agent-presets';
   static const tokenManagement = '/token-management';
+  static const modelManagement = '/settings/models';
 
   static GoRouter createRouter(AuthProvider authProvider) {
     return GoRouter(
@@ -74,6 +76,10 @@ class AppRoutes {
         GoRoute(
           path: tokenManagement,
           builder: (context, state) => const TokenManagementScreen(),
+        ),
+        GoRoute(
+          path: modelManagement,
+          builder: (context, state) => const ModelManagementScreen(),
         ),
       ],
     );

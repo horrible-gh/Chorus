@@ -89,7 +89,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 }
 
-// ── 프로필 섹션 ──────────────────────────────────────────────────────
+// ── Profile section ──────────────────────────────────────────────────────
 class _ProfileSection extends StatelessWidget {
   const _ProfileSection({required this.profile});
 
@@ -134,7 +134,7 @@ class _ProfileSection extends StatelessWidget {
   }
 }
 
-// ── 네비게이션 섹션 ──────────────────────────────────────────────────
+// ── Navigation section ──────────────────────────────────────────────────
 class _NavigationSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
@@ -157,12 +157,19 @@ class _NavigationSection extends StatelessWidget {
           trailing: const Icon(Icons.chevron_right),
           onTap: () => context.push(AppRoutes.tokenManagement),
         ),
+        ListTile(
+          leading: const Icon(Icons.tune_outlined),
+          title: const Text('Model Management'),
+          subtitle: const Text('Manage AI model registry'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => context.push(AppRoutes.modelManagement),
+        ),
       ],
     );
   }
 }
 
-// ── 비밀번호 변경 섹션 ───────────────────────────────────────────────
+// ── Change password section ───────────────────────────────────────────────
 class _ChangePasswordSection extends StatefulWidget {
   const _ChangePasswordSection({required this.service});
 
@@ -744,7 +751,7 @@ class _RecoveryCodesBox extends StatelessWidget {
   }
 }
 
-// ── TOTP 비활성화 다이얼로그 ─────────────────────────────────────────
+// ── TOTP disable dialog ─────────────────────────────────────────
 class _TotpDisableDialog extends StatefulWidget {
   const _TotpDisableDialog({required this.service});
 
@@ -848,7 +855,7 @@ class _TotpDisableDialogState extends State<_TotpDisableDialog> {
   }
 }
 
-// ── 에러 뷰 ──────────────────────────────────────────────────────────
+// ── Error view ──────────────────────────────────────────────────────────
 class _ErrorView extends StatelessWidget {
   const _ErrorView({required this.message, required this.onRetry});
 
