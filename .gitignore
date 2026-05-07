@@ -66,6 +66,7 @@ logs/
 # Environment / secrets
 .env
 .env.*
+!.env.sample
 *.pem
 *.key
 
