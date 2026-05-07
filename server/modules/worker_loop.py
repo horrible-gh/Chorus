@@ -97,7 +97,9 @@ def create_task(payload: dict, route: bool = True) -> dict:
                     "agent_id": task["assigned_agent_id"],
                     "task_intent": task["task_type"],
                     "risk_hint": "low" if task["task_type"] in ("document_draft", "agent_response") else "normal",
-                    "preferred_runner": "copilot",
+                    "preferred_runner": payload.get("preferred_runner") or "copilot",
+                    "default_model": payload.get("default_model"),
+                    "default_grade": payload.get("default_grade"),
                     "allowed_grade_min": "0급",
                     "allowed_grade_max": "1급",
                     "title": task["title"],
@@ -130,6 +132,10 @@ def create_agent_response_task(room_id: str, message: dict, agent_id: str, conte
     task_input: dict = {"room_id": room_id, "message_id": message["message_id"], "instruction": message["text"]}
     if context_messages:
         task_input["context_messages"] = context_messages
+    agent = get_agent(agent_id)
+    preferred_runner = (agent.get("default_runner") or "copilot") if agent else "copilot"
+    default_model = agent.get("default_model") if agent else None
+    default_grade = agent.get("default_grade") if agent else None
     return create_task(
         {
             "source": "agent_chat",
@@ -137,6 +143,9 @@ def create_agent_response_task(room_id: str, message: dict, agent_id: str, conte
             "task_type": "agent_response",
             "priority": "normal",
             "assigned_agent_id": agent_id,
+            "preferred_runner": preferred_runner,
+            "default_model": default_model,
+            "default_grade": default_grade,
             "input": task_input,
             "constraints": {"can_modify_code": False, "can_modify_index": False, "requires_review": False},
         }
@@ -344,10 +353,81 @@ def fail_task(task_id: str, payload: dict) -> tuple[dict, dict]:
 # ── Polling loop ─────────────────────────────────────────────────────────────
 
 
-async def _dispatch_pending_tasks() -> None:
-    """Fetches runnable agent_response tasks and processes them sequentially."""
+async def _dispatch_one_task(task: dict) -> None:
+    """Processes one runnable agent_response task."""
     from modules.chat_manager import _call_ai_sync, _build_chat_history
 
+    task_id = task["task_id"]
+    logger.debug(f"[poll_loop] task dispatch start — task_id={task_id!r}")
+
+    job_id = f"job_{uuid.uuid4().hex[:12]}"
+    try:
+        lease, task = acquire_lease(task_id, {"worker_id": _POLL_WORKER_ID, "job_id": job_id})
+    except Exception as e:
+        logger.debug(f"[poll_loop] lease acquire failed — task_id={task_id!r}: {e}")
+        return
+
+    lease_id = lease["lease_id"]
+    logger.debug(f"[poll_loop] lease acquired — task_id={task_id!r} lease_id={lease_id!r}")
+
+    agent_id = task.get("assigned_agent_id")
+    agent = STORE.get_agent(agent_id) if agent_id else None
+
+    task_input = task.get("input_json", {})
+    room_id = task_input.get("room_id")
+    user_message_id = task_input.get("message_id")
+    instruction = task_input.get("instruction", "")
+
+    history = _build_chat_history(room_id, user_message_id) if room_id and user_message_id else []
+
+    runner = task.get("assigned_runner") or "copilot"
+    model = task.get("assigned_model") or "claude-sonnet-4-5"
+
+    settings = agent.get("settings_json") or {} if agent else {}
+    if isinstance(settings, str):
+        import json as _json
+        try:
+            settings = _json.loads(settings)
+        except Exception:
+            settings = {}
+    provider_token_id = settings.get("provider_token_id")
+
+    logger.debug(f"[poll_loop] AI call start — task_id={task_id!r} runner={runner!r} model={model!r}")
+    try:
+        ai_text = await asyncio.to_thread(
+            _call_ai_sync,
+            runner=runner,
+            model=model,
+            system_prompt=agent.get("system_prompt") if agent else None,
+            history=history,
+            user_text=instruction,
+            pinned_context=agent.get("pinned_context") if agent else None,
+            provider_token_id=provider_token_id,
+        )
+        logger.debug(f"[poll_loop] AI call succeeded — task_id={task_id!r}")
+        complete_task(task_id, {
+            "worker_id": _POLL_WORKER_ID,
+            "lease_id": lease_id,
+            "summary": ai_text,
+            "artifact_paths": [],
+        })
+        logger.info(f"[poll_loop] task completed — task_id={task_id!r}")
+    except Exception as e:
+        logger.error(f"[poll_loop] AI call failed — task_id={task_id!r}: {e}")
+        try:
+            fail_task(task_id, {
+                "worker_id": _POLL_WORKER_ID,
+                "lease_id": lease_id,
+                "code": "AI_CALL_FAILED",
+                "message": str(e),
+                "retryable": True,
+            })
+        except Exception as fe:
+            logger.error(f"[poll_loop] fail_task call failed — task_id={task_id!r}: {fe}")
+
+
+async def _dispatch_pending_tasks() -> None:
+    """Fetches runnable agent_response tasks and processes them concurrently."""
     now = datetime.now(JST)
     runnable = [
         t for t in STORE.list_tasks()
@@ -360,64 +440,13 @@ async def _dispatch_pending_tasks() -> None:
         )
     ]
 
-    for task in runnable:
-        task_id = task["task_id"]
-        logger.debug(f"[poll_loop] task dispatch start — task_id={task_id!r}")
-
-        job_id = f"job_{uuid.uuid4().hex[:12]}"
-        try:
-            lease, task = acquire_lease(task_id, {"worker_id": _POLL_WORKER_ID, "job_id": job_id})
-        except Exception as e:
-            logger.debug(f"[poll_loop] lease acquire failed — task_id={task_id!r}: {e}")
-            continue
-
-        lease_id = lease["lease_id"]
-        logger.debug(f"[poll_loop] lease acquired — task_id={task_id!r} lease_id={lease_id!r}")
-
-        agent_id = task.get("assigned_agent_id")
-        agent = STORE.get_agent(agent_id) if agent_id else None
-
-        task_input = task.get("input_json", {})
-        room_id = task_input.get("room_id")
-        user_message_id = task_input.get("message_id")
-        instruction = task_input.get("instruction", "")
-
-        history = _build_chat_history(room_id, user_message_id) if room_id and user_message_id else []
-
-        runner = task.get("assigned_runner") or "copilot"
-        model = task.get("assigned_model") or "claude-sonnet-4-5"
-
-        logger.debug(f"[poll_loop] AI call start — task_id={task_id!r} runner={runner!r} model={model!r}")
-        try:
-            ai_text = await asyncio.to_thread(
-                _call_ai_sync,
-                runner=runner,
-                model=model,
-                system_prompt=agent.get("system_prompt") if agent else None,
-                history=history,
-                user_text=instruction,
-                pinned_context=agent.get("pinned_context") if agent else None,
-            )
-            logger.debug(f"[poll_loop] AI call succeeded — task_id={task_id!r}")
-            complete_task(task_id, {
-                "worker_id": _POLL_WORKER_ID,
-                "lease_id": lease_id,
-                "summary": ai_text,
-                "artifact_paths": [],
-            })
-            logger.info(f"[poll_loop] task completed — task_id={task_id!r}")
-        except Exception as e:
-            logger.error(f"[poll_loop] AI call failed — task_id={task_id!r}: {e}")
-            try:
-                fail_task(task_id, {
-                    "worker_id": _POLL_WORKER_ID,
-                    "lease_id": lease_id,
-                    "code": "AI_CALL_FAILED",
-                    "message": str(e),
-                    "retryable": True,
-                })
-            except Exception as fe:
-                logger.error(f"[poll_loop] fail_task call failed — task_id={task_id!r}: {fe}")
+    results = await asyncio.gather(
+        *(_dispatch_one_task(task) for task in runnable),
+        return_exceptions=True,
+    )
+    for task, result in zip(runnable, results):
+        if isinstance(result, Exception):
+            logger.error(f"[poll_loop] task dispatch crashed — task_id={task['task_id']!r}: {result}")
 
 
 async def poll_loop() -> None:

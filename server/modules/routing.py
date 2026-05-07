@@ -2,6 +2,7 @@ from typing import Optional
 
 from fastapi import HTTPException
 
+import LogAssist.log as logger
 from modules.chat_manager import STORE, now_iso
 
 GRADE_RANK = {"0급": 0, "0.33급": 33, "1급": 100, "7.5급": 750}
@@ -98,19 +99,54 @@ def select_model(request: dict) -> dict:
         decision = "selected"
         escalation_target = None
         model = None
+
         if grade is None:
             decision = "blocked"
         else:
             requested_max = request.get("allowed_grade_max") or "1급"
-            if GRADE_RANK.get(grade, 100) > GRADE_RANK.get(requested_max, 100):
-                decision = "escalated"
-                escalation_target = "higher_model"
-            model = _pick_model(grade, request.get("preferred_runner"), requested_max)
+            preferred_runner = request.get("preferred_runner")
+            default_model = request.get("default_model")
+            default_grade = request.get("default_grade")
+
+            # Try agent preset's default_model first (preferred_runner + model name match)
+            if default_model:
+                all_active = STORE.list_models(active_only=True)
+                matched = [
+                    item for item in all_active
+                    if item["model_name"] == default_model
+                    and (not preferred_runner or item["runner"] == preferred_runner)
+                ]
+                if matched:
+                    model = matched[0]
+                    grade = model["grade"]
+                    reason_code = "AGENT_DEFAULT_MODEL"
+                    reason_text = f"Agent preset default model selected: {default_model}"
+                    requires_review = False
+                else:
+                    logger.warning(
+                        f"[select_model] default_model={default_model!r} not found or inactive"
+                        f" for runner={preferred_runner!r}, falling back to grade-based selection"
+                    )
+
+            # Grade-based selection if no preferred model was resolved
             if model is None:
-                raise HTTPException(status_code=400, detail={"code": "NO_AVAILABLE_MODEL", "field": "preferred_runner"})
-            if grade == "1급" and intent in ("policy_decision", "status_decision") or request.get("previous_failure_code"):
-                decision = "escalated"
-                escalation_target = "higher_model"
+                # Respect default_grade from agent preset if within allowed range
+                if default_grade and default_grade in GRADE_RANK:
+                    if GRADE_RANK.get(default_grade, 9999) <= GRADE_RANK.get(requested_max, GRADE_RANK["1급"]):
+                        grade = default_grade
+                        reason_code = "AGENT_DEFAULT_GRADE"
+                        reason_text = f"Agent preset default grade applied: {default_grade}"
+
+                if GRADE_RANK.get(grade, 100) > GRADE_RANK.get(requested_max, 100):
+                    decision = "escalated"
+                    escalation_target = "higher_model"
+                model = _pick_model(grade, preferred_runner, requested_max)
+                if model is None:
+                    raise HTTPException(status_code=400, detail={"code": "NO_AVAILABLE_MODEL", "field": "preferred_runner"})
+                if grade == "1급" and intent in ("policy_decision", "status_decision") or request.get("previous_failure_code"):
+                    decision = "escalated"
+                    escalation_target = "higher_model"
+
         routing_id = STORE.next_id("route")
         selected = {
             "routing_id": routing_id,

@@ -14,6 +14,8 @@ class RoutingSelectRequest(BaseModel):
     task_intent: Optional[str] = None
     risk_hint: Literal["low", "normal", "high"] = "normal"
     preferred_runner: Optional[str] = "copilot"
+    default_model: Optional[str] = None
+    default_grade: Optional[str] = None
     allowed_grade_min: str = "0급"
     allowed_grade_max: str = "1급"
     title: Optional[str] = None

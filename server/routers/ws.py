@@ -24,7 +24,7 @@ router = APIRouter()
 
 
 def _verify_ws_token(authorization: str | None) -> str | None:
-    """WebSocket 인증 토큰을 검증하고 user_id를 반환한다. 실패 시 None 반환."""
+    """Verify a WebSocket auth token and return user_id. Returns None on failure."""
     if not authorization or not authorization.startswith("Bearer "):
         return None
     token = authorization[len("Bearer "):]
