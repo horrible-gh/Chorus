@@ -75,6 +75,18 @@ A real-time chat and task management platform built with Flutter and FastAPI, en
 
    The API will be available at `http://localhost:8000`
 
+5. **Create a dev user**:
+    ```bash
+    python server/create_dev_user.py
+    ```
+    
+    This creates a default user (`dev1@chorus.local` with password `devpass123`). You can also:
+    ```bash
+    python server/create_dev_user.py --count 5              # Create 5 users
+    python server/create_dev_user.py --list                 # List all users
+    python server/create_dev_user.py --delete dev1@chorus.local  # Delete a user
+    ```
+
 ### Client Setup
 
 1. **Install dependencies**:
