@@ -21,9 +21,7 @@ def get_iv(base64_flg=None):
 
 def aes_encrypt(data, key, iv, base64_flg=None):
     if isinstance(data, str):
-        data = data.encode('utf-8')  # 문자열 데이터를 바이트로 변환
-    cipher = AES.new(key, AES.MODE_CBC, iv)
-    encrypted_data = cipher.encrypt(pad(data, AES.block_size))
+        data = data.encode('utf-8')  # convert string data to bytes
     if base64_flg:
         encrypted_data = base64_encode(encrypted_data)
     return encrypted_data
@@ -39,7 +37,7 @@ def aes_decrypt(encrypted_data, key, iv, base64_flg=None):
 
 def aes_encrypt_in_chunks(data, key, iv, chunk_size=4096):
     if isinstance(data, str):
-        data = data.encode('utf-8')  # 문자열 데이터를 바이트로 변환
+        data = data.encode('utf-8')  # convert string data to bytes
     cipher = AES.new(key, AES.MODE_CBC, iv)
     encrypted_data = b''
 
