@@ -113,7 +113,7 @@ class ChatService {
     String? requestedByUserId,
   }) async {
     final response = await _dio.post<Map<String, dynamic>>(
-      '/chorus/chat/rooms/$roomId/messages/$generationId/cancel',
+      '/chat/rooms/$roomId/messages/$generationId/cancel',
       data: {
         'request_source': requestSource,
         if (requestedByUserId != null) 'requested_by_user_id': requestedByUserId,

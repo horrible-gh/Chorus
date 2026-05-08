@@ -492,7 +492,7 @@ class _ChatPaneState extends State<_ChatPane> {
               if (mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(
-                    content: Text('취소에 실패했습니다. 다시 시도하세요.'),
+                    content: Text('Cancel failed. Try again.'),
                   ),
                 );
               }
@@ -600,10 +600,10 @@ class _ChatPaneState extends State<_ChatPane> {
               pinnedMessagePreview: pinnedMessagePreview,
               userId: widget.userId,
               fileUploadService: _fileUploadService!,
-              showCancelButton: chat.isSending || chat.hasPendingTasks,
+              showCancelButton: chat.hasPendingTasks,
               isCancelRequested:
                   chat.generationState == GenerationState.cancelRequested,
-              onCancel: (chat.isSending || chat.hasPendingTasks)
+              onCancel: chat.hasPendingTasks
                   ? () => context
                         .read<ChatProvider>()
                         .cancelGeneration(widget.userId)
@@ -1051,17 +1051,18 @@ class _ComposerState extends State<_Composer> {
                 const SizedBox(width: 10),
                 if (widget.showCancelButton) ...[
                   widget.isCancelRequested
-                      ? OutlinedButton.icon(
+                      ? IconButton.filled(
                           onPressed: null,
                           icon: const SizedBox.square(
                             dimension: 14,
                             child: CircularProgressIndicator(strokeWidth: 2),
                           ),
-                          label: const Text('취소 중...'),
+                          tooltip: 'Cancel...',
                         )
-                      : OutlinedButton(
+                      : IconButton.filled(
                           onPressed: widget.onCancel,
-                          child: const Text('생성 중단'),
+                          icon: const Icon(Icons.stop),
+                          tooltip: 'Stop',
                         ),
                   const SizedBox(width: 8),
                 ],
@@ -1189,6 +1190,11 @@ class _MessageBubble extends StatelessWidget {
                           color: textColor,
                         ),
                   ),
+                  if (message.isFromAgent && message.contextUsage != null)
+                    _ContextMeterBar(
+                      contextUsage: message.contextUsage!,
+                      textColor: textColor,
+                    ),
                 ],
               ),
             ),
@@ -1233,6 +1239,59 @@ class _MessageBubble extends StatelessWidget {
             ),
           ),
       ],
+    );
+  }
+}
+
+class _ContextMeterBar extends StatelessWidget {
+  const _ContextMeterBar({
+    required this.contextUsage,
+    required this.textColor,
+  });
+
+  final ContextUsage contextUsage;
+  final Color textColor;
+
+  Color _barColor() {
+    final r = contextUsage.contextRatio;
+    if (r >= 0.95) return Colors.red;
+    if (r >= 0.80) return Colors.orange;
+    if (r >= 0.60) return Colors.amber;
+    return Colors.green;
+  }
+
+  String _label() {
+    final pct = (contextUsage.contextRatio * 100).round();
+    return contextUsage.hasActual ? '$pct%' : '~$pct% est.';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(2),
+            child: LinearProgressIndicator(
+              value: contextUsage.contextRatio.clamp(0.0, 1.0),
+              minHeight: 3,
+              backgroundColor: textColor.withValues(alpha: 0.15),
+              valueColor: AlwaysStoppedAnimation<Color>(_barColor()),
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            _label(),
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: textColor.withValues(alpha: 0.7),
+                  fontSize: 10,
+                ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -1505,7 +1564,7 @@ class _CancelledGenerationBubble extends StatelessWidget {
                 ),
                 const SizedBox(width: 10),
                 Text(
-                  '생성이 중단되었습니다',
+                  'Generation cancelled.',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: colorScheme.onSurfaceVariant,
                       ),
@@ -1546,7 +1605,7 @@ class _FailedGenerationBubble extends StatelessWidget {
                 ),
                 const SizedBox(width: 10),
                 Text(
-                  '생성 중 오류가 발생했습니다',
+                  'An error occurred during generation.',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: colorScheme.onErrorContainer,
                       ),

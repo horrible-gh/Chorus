@@ -80,6 +80,40 @@ class ChatParticipant {
   }
 }
 
+class ContextUsage {
+  const ContextUsage({
+    required this.estimatedInputTokens,
+    required this.contextWindow,
+    required this.contextRatio,
+    required this.contextStatus,
+    this.actualInputTokens,
+    this.actualOutputTokens,
+    this.totalCostUsd,
+  });
+
+  final int estimatedInputTokens;
+  final int contextWindow;
+  final double contextRatio;
+  final String contextStatus;
+  final int? actualInputTokens;
+  final int? actualOutputTokens;
+  final double? totalCostUsd;
+
+  bool get hasActual => actualInputTokens != null;
+
+  factory ContextUsage.fromJson(Map<String, dynamic> json) {
+    return ContextUsage(
+      estimatedInputTokens: (json['estimated_input_tokens'] as num?)?.toInt() ?? 0,
+      contextWindow: (json['context_window'] as num?)?.toInt() ?? 0,
+      contextRatio: (json['context_ratio'] as num?)?.toDouble() ?? 0.0,
+      contextStatus: json['context_status']?.toString() ?? 'OK',
+      actualInputTokens: (json['actual_input_tokens'] as num?)?.toInt(),
+      actualOutputTokens: (json['actual_output_tokens'] as num?)?.toInt(),
+      totalCostUsd: (json['total_cost_usd'] as num?)?.toDouble(),
+    );
+  }
+}
+
 class ChatMessage {
   const ChatMessage({
     required this.messageId,
@@ -95,6 +129,7 @@ class ChatMessage {
     this.senderUserId,
     this.senderAgentId,
     this.sourceTaskId,
+    this.contextUsage,
   });
 
   final String messageId;
@@ -109,6 +144,7 @@ class ChatMessage {
   final String deliveryMode;
   final String historyState;
   final String? sourceTaskId;
+  final ContextUsage? contextUsage;
   final String createdAt;
 
   bool get isFromUser => senderType == 'user';
@@ -118,6 +154,7 @@ class ChatMessage {
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) {
     final rawRecipients = json['recipient_agent_ids'];
+    final rawContextUsage = json['context_usage'];
     return ChatMessage(
       messageId: _string(json['message_id']),
       roomId: _string(json['room_id']),
@@ -134,6 +171,9 @@ class ChatMessage {
       historyState: _string(json['history_state']),
       sourceTaskId: _nullableString(json['source_task_id']),
       createdAt: _string(json['created_at']),
+      contextUsage: rawContextUsage is Map<String, dynamic>
+          ? ContextUsage.fromJson(rawContextUsage)
+          : null,
     );
   }
 }

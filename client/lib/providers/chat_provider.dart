@@ -297,7 +297,7 @@ class ChatProvider extends ChangeNotifier {
   }
 
   Future<void> _pollAgentResponses(String roomId) async {
-    for (var i = 0; i < 30; i++) {
+    for (var i = 0; i < 300; i++) {
       await Future.delayed(const Duration(seconds: 2));
       if (!_hasPendingTasks) return;
       if (roomId != _selectedRoomId) return;

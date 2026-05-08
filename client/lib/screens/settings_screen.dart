@@ -152,8 +152,8 @@ class _NavigationSection extends StatelessWidget {
         ),
         ListTile(
           leading: const Icon(Icons.key_outlined),
-          title: const Text('Token Management'),
-          subtitle: const Text('Manage API provider tokens'),
+          title: const Text('Provider Management'),
+          subtitle: const Text('Manage AI providers'),
           trailing: const Icon(Icons.chevron_right),
           onTap: () => context.push(AppRoutes.tokenManagement),
         ),
