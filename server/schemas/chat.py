@@ -1,4 +1,4 @@
-from typing import List, Literal, Optional
+from typing import Any, List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -104,6 +104,7 @@ class Message(BaseModel):
     history_state: str
     source_task_id: Optional[str] = None
     created_at: str
+    context_usage: Optional[Any] = None
 
 
 class RoomEvent(BaseModel):

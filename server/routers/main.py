@@ -10,6 +10,7 @@ from .worker import worker
 from .model import model as model_module
 from . import settings as settings_module
 from .auth import cli_auth as cli_auth_module
+from .auth import provider_management as provider_management_module
 from . import token as token_module
 from . import files as files_module
 from . import ws as ws_module
@@ -61,6 +62,7 @@ app.include_router(files_module.router, prefix=f"{CONTEXT}/files", tags=["Chorus
 app.include_router(ws_module.router, prefix=f"{CONTEXT}/ws", tags=["ChorusWS"])
 app.include_router(model_module.router, prefix=f"{CONTEXT}/models", tags=["ChorusModels"])
 app.include_router(cli_auth_module.router, prefix=f"{CONTEXT}/auth", tags=["ChorusAuth"])
+app.include_router(provider_management_module.router, prefix=f"{CONTEXT}/auth", tags=["ChorusProviders"])
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGIN,
