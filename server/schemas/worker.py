@@ -83,6 +83,11 @@ class Task(BaseModel):
     created_at: str
     updated_at: str
     completed_at: Optional[str] = None
+    generation_id: Optional[str] = None
+    room_id: Optional[str] = None
+    source_message_id: Optional[str] = None
+    cancelled_at: Optional[str] = None
+    cancel_requested_at: Optional[str] = None
 
 
 class Lease(BaseModel):

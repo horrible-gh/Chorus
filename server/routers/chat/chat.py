@@ -3,6 +3,7 @@ from typing import Optional
 from fastapi import APIRouter, Query
 
 from modules import chat_manager
+from routers.chat import messages as messages_router
 from schemas.chat import (
     ChatRoomCreate,
     ChatRoomResponse,
@@ -15,6 +16,7 @@ from schemas.chat import (
 )
 
 router = APIRouter()
+router.include_router(messages_router.router)
 
 
 @router.post("/rooms", response_model=ChatRoomResponse)
@@ -92,7 +94,16 @@ async def send_message(room_id: str, request: MessageSend):
     else:
         message, tasks = chat_manager.send_message_sync(room_id, request.model_dump())
 
-    return {"request_id": request.request_id, "ok": True, "message": message, "created_tasks": tasks}
+    generation_id = tasks[0].get("generation_id") if tasks else None
+    status = "generating" if tasks else None
+    return {
+        "request_id": request.request_id,
+        "ok": True,
+        "message": message,
+        "created_tasks": tasks,
+        "generation_id": generation_id,
+        "status": status,
+    }
 
 
 @router.get("/rooms/{room_id}/messages")

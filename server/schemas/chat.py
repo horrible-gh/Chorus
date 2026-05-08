@@ -128,4 +128,6 @@ class MessageSendResponse(BaseModel):
     ok: bool = True
     message: Message
     created_tasks: List[dict] = Field(default_factory=list)
+    generation_id: Optional[str] = None
+    status: Optional[str] = None
 

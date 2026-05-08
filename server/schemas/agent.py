@@ -1,9 +1,55 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
 _VALID_AUTH_TYPES = frozenset({"api_token", "cli"})
 _VALID_CLI_PROVIDERS = frozenset({"claude_cli", "codex_cli", "copilot", "gcloud_adc"})
+
+_ALLOWED_DIRS_MAX_COUNT = 20
+_ALLOWED_DIRS_PATH_MAX_LEN = 260
+
+import re as _re
+_DRIVE_ROOT_RE = _re.compile(r'^[A-Za-z]:\\$')
+_ABSOLUTE_PATH_RE = _re.compile(r'^[A-Za-z]:\\')
+
+
+def _is_absolute_path(path: str) -> bool:
+    normalized = path.replace("/", "\\")
+    if _ABSOLUTE_PATH_RE.match(normalized):
+        return True
+    if normalized.startswith("\\\\"):
+        return True
+    return False
+
+
+def _is_drive_root_path(path: str) -> bool:
+    normalized = path.replace("/", "\\")
+    return bool(_DRIVE_ROOT_RE.match(normalized))
+
+
+def _validate_allowed_dirs_in_settings(settings: Dict[str, Any]) -> None:
+    """Raise ValueError for invalid allowed_dirs in settings_json."""
+    raw = settings.get("allowed_dirs")
+    if raw is None:
+        return
+    if not isinstance(raw, list):
+        raise ValueError("allowed_dirs는 배열이어야 합니다.")
+    if len(raw) > _ALLOWED_DIRS_MAX_COUNT:
+        raise ValueError(f"allowed_dirs는 최대 {_ALLOWED_DIRS_MAX_COUNT}개까지만 허용됩니다.")
+    for item in raw:
+        if not isinstance(item, str):
+            raise ValueError("각 경로는 문자열이어야 합니다.")
+        trimmed = item.strip()
+        if len(trimmed) == 0:
+            raise ValueError("allowed_dirs에 빈 문자열 경로가 포함되어 있습니다.")
+        if len(trimmed) > _ALLOWED_DIRS_PATH_MAX_LEN:
+            raise ValueError("allowed_dirs의 경로가 최대 길이(260자)를 초과합니다.")
+        if _is_drive_root_path(trimmed):
+            raise ValueError("드라이브 루트 경로(예: C:\\, D:\\)는 허용되지 않습니다.")
+        if not _is_absolute_path(trimmed):
+            raise ValueError("allowed_dirs의 경로가 유효하지 않습니다. 절대경로만 허용됩니다.")
+    deduplicated: List[str] = list(dict.fromkeys(item.strip() for item in raw))
+    settings["allowed_dirs"] = deduplicated
 
 
 def _validate_auth_in_settings(settings: Dict[str, Any]) -> None:
@@ -47,6 +93,7 @@ class AgentPresetCreate(BaseModel):
     @model_validator(mode="after")
     def check_auth_settings(self) -> "AgentPresetCreate":
         _validate_auth_in_settings(self.settings_json)
+        _validate_allowed_dirs_in_settings(self.settings_json)
         return self
 
 
@@ -66,6 +113,7 @@ class AgentPresetUpdate(BaseModel):
     def check_auth_settings(self) -> "AgentPresetUpdate":
         if self.settings_json is not None:
             _validate_auth_in_settings(self.settings_json)
+            _validate_allowed_dirs_in_settings(self.settings_json)
         return self
 
 

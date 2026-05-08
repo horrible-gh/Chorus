@@ -13,7 +13,7 @@ from .auth import cli_auth as cli_auth_module
 from . import token as token_module
 from . import files as files_module
 from . import ws as ws_module
-from routers.login.auth import verify_token, token_blacklist
+from routers.login.auth import verify_token
 from config import settings
 from startup import run_all as _bootstrap, start_poll_loop, stop_poll_loop
 from slowapi import Limiter, _rate_limit_exceeded_handler
