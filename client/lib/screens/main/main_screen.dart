@@ -449,6 +449,7 @@ class _ChatPaneState extends State<_ChatPane> {
   bool _pinOnSend = false;
   int _lastMessageCount = 0;
   bool _lastHadPendingTasks = false;
+  GenerationState _lastGenerationState = GenerationState.idle;
   ChatContextOptions _contextOptions = const ChatContextOptions();
   FileUploadService? _fileUploadService;
 
@@ -479,6 +480,24 @@ class _ChatPaneState extends State<_ChatPane> {
 
         if (_lastHadPendingTasks != chat.hasPendingTasks) {
           _lastHadPendingTasks = chat.hasPendingTasks;
+          WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToEnd());
+        }
+
+        if (_lastGenerationState != chat.generationState) {
+          final prevState = _lastGenerationState;
+          _lastGenerationState = chat.generationState;
+          if (prevState == GenerationState.cancelRequested &&
+              chat.generationState == GenerationState.generating) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('취소에 실패했습니다. 다시 시도하세요.'),
+                  ),
+                );
+              }
+            });
+          }
           WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToEnd());
         }
 
@@ -522,15 +541,26 @@ class _ChatPaneState extends State<_ChatPane> {
                           controller: _scrollController,
                           padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
                           itemCount: chat.messages.length +
-                              (chat.hasPendingTasks ? 1 : 0),
+                              (_showStatusBubble(chat) ? 1 : 0),
                           separatorBuilder: (context, index) =>
                               const SizedBox(height: 12),
                           itemBuilder: (context, index) {
-                            if (index == chat.messages.length) {
-                              return _AgentThinkingBubble(
-                                completed: chat.pendingTasksCompleted,
-                                total: chat.pendingTasksTotal,
-                              );
+                            if (index == chat.messages.length &&
+                                _showStatusBubble(chat)) {
+                              if (chat.hasPendingTasks) {
+                                return _AgentThinkingBubble(
+                                  completed: chat.pendingTasksCompleted,
+                                  total: chat.pendingTasksTotal,
+                                );
+                              } else if (chat.generationState ==
+                                  GenerationState.cancelled) {
+                                return const _CancelledGenerationBubble();
+                              } else if (chat.generationState ==
+                                  GenerationState.failed) {
+                                return const _FailedGenerationBubble();
+                              } else {
+                                return const _TimeoutGenerationBubble();
+                              }
                             }
                             final message = chat.messages[index];
                             final alreadyPinned =
@@ -570,6 +600,14 @@ class _ChatPaneState extends State<_ChatPane> {
               pinnedMessagePreview: pinnedMessagePreview,
               userId: widget.userId,
               fileUploadService: _fileUploadService!,
+              showCancelButton: chat.isSending || chat.hasPendingTasks,
+              isCancelRequested:
+                  chat.generationState == GenerationState.cancelRequested,
+              onCancel: (chat.isSending || chat.hasPendingTasks)
+                  ? () => context
+                        .read<ChatProvider>()
+                        .cancelGeneration(widget.userId)
+                  : null,
               onWhisperChanged: (value) {
                 setState(() {
                   _whisper = value;
@@ -700,6 +738,13 @@ class _ChatPaneState extends State<_ChatPane> {
       duration: const Duration(milliseconds: 220),
       curve: Curves.easeOut,
     );
+  }
+
+  bool _showStatusBubble(ChatProvider chat) {
+    return chat.hasPendingTasks ||
+        chat.generationState == GenerationState.cancelled ||
+        chat.generationState == GenerationState.failed ||
+        chat.generationState == GenerationState.timeout;
   }
 
   String _senderName(ChatMessage message, ChatProvider chat) {
@@ -851,6 +896,9 @@ class _Composer extends StatefulWidget {
     required this.onAgentToggled,
     required this.onContextChanged,
     required this.onSend,
+    required this.showCancelButton,
+    required this.isCancelRequested,
+    this.onCancel,
     this.pinnedMessagePreview,
   });
 
@@ -872,6 +920,9 @@ class _Composer extends StatefulWidget {
   final void Function(String agentId, bool selected) onAgentToggled;
   final ValueChanged<ChatContextOptions> onContextChanged;
   final VoidCallback onSend;
+  final bool showCancelButton;
+  final bool isCancelRequested;
+  final VoidCallback? onCancel;
 
   @override
   State<_Composer> createState() => _ComposerState();
@@ -998,6 +1049,22 @@ class _ComposerState extends State<_Composer> {
                   ),
                 ),
                 const SizedBox(width: 10),
+                if (widget.showCancelButton) ...[
+                  widget.isCancelRequested
+                      ? OutlinedButton.icon(
+                          onPressed: null,
+                          icon: const SizedBox.square(
+                            dimension: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                          label: const Text('취소 중...'),
+                        )
+                      : OutlinedButton(
+                          onPressed: widget.onCancel,
+                          child: const Text('생성 중단'),
+                        ),
+                  const SizedBox(width: 8),
+                ],
                 ValueListenableBuilder<TextEditingValue>(
                   valueListenable: widget.controller,
                   builder: (context, value, child) {
@@ -1398,6 +1465,129 @@ class _AgentThinkingBubble extends StatelessWidget {
                 const SizedBox(width: 10),
                 Text(
                   label,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CancelledGenerationBubble extends StatelessWidget {
+  const _CancelledGenerationBubble();
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 720),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: colorScheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.cancel_outlined,
+                  size: 14,
+                  color: colorScheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  '생성이 중단되었습니다',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _FailedGenerationBubble extends StatelessWidget {
+  const _FailedGenerationBubble();
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 720),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: colorScheme.errorContainer,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.error_outline,
+                  size: 14,
+                  color: colorScheme.onErrorContainer,
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  '생성 중 오류가 발생했습니다',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: colorScheme.onErrorContainer,
+                      ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TimeoutGenerationBubble extends StatelessWidget {
+  const _TimeoutGenerationBubble();
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 720),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: colorScheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.timer_off_outlined,
+                  size: 14,
+                  color: colorScheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  '응답 시간이 초과되었습니다',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: colorScheme.onSurfaceVariant,
                       ),

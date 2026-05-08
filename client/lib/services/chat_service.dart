@@ -102,7 +102,31 @@ class ChatService {
       createdTasks: _list(data['created_tasks'])
           .map((item) => ChatCreatedTask.fromJson(_map(item)))
           .toList(),
+      generationId: data['generation_id']?.toString(),
     );
+  }
+
+  Future<Map<String, dynamic>> cancelGeneration({
+    required String roomId,
+    required String generationId,
+    String requestSource = 'user_click',
+    String? requestedByUserId,
+  }) async {
+    final response = await _dio.post<Map<String, dynamic>>(
+      '/chorus/chat/rooms/$roomId/messages/$generationId/cancel',
+      data: {
+        'request_source': requestSource,
+        if (requestedByUserId != null) 'requested_by_user_id': requestedByUserId,
+      },
+      options: Options(
+        validateStatus: (status) => true,
+        receiveTimeout: const Duration(seconds: 10),
+      ),
+    );
+    return {
+      '_http_status': response.statusCode ?? 0,
+      ..._map(response.data),
+    };
   }
 
   Future<List<AgentPreset>> listAgents({required String ownerUserId}) async {

@@ -66,6 +66,7 @@ class AgentPresetSettings {
     this.session = 'none',
     this.authType = 'api_token',
     this.cliProvider,
+    this.allowedDirs = const [],
   });
 
   final String? providerTokenId;
@@ -81,8 +82,17 @@ class AgentPresetSettings {
   /// Required when [authType] is 'cli'.
   /// Valid values: 'claude_cli' | 'codex_cli' | 'copilot' | 'gcloud_adc'
   final String? cliProvider;
+  /// Codex runner only. Paths passed as --add-dir to the Codex CLI.
+  final List<String> allowedDirs;
 
   factory AgentPresetSettings.fromJson(Map<String, dynamic> json) {
+    final rawDirs = json['allowed_dirs'];
+    final List<String> allowedDirs;
+    if (rawDirs is List) {
+      allowedDirs = rawDirs.whereType<String>().toList(growable: false);
+    } else {
+      allowedDirs = const [];
+    }
     return AgentPresetSettings(
       providerTokenId: _nullableString(json['provider_token_id']),
       useAllowAll: _bool(json['use_allow_all']),
@@ -93,6 +103,7 @@ class AgentPresetSettings {
       session: _string(json['session'], fallback: 'none'),
       authType: _string(json['auth_type'], fallback: 'api_token'),
       cliProvider: _nullableString(json['cli_provider']),
+      allowedDirs: allowedDirs,
     );
   }
 
@@ -107,6 +118,7 @@ class AgentPresetSettings {
       'session': session,
       'auth_type': authType,
       'cli_provider': cliProvider,
+      'allowed_dirs': allowedDirs,
     };
   }
 }

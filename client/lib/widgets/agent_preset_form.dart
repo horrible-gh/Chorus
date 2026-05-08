@@ -49,6 +49,7 @@ class _AgentPresetFormState extends State<AgentPresetForm> {
   bool _useAllowAll = false;
   String _authType = 'api_token';
   String? _cliProvider;
+  final List<TextEditingController> _allowedDirsControllers = [];
 
   bool get _canEdit => widget.enabled && !widget.isSaving;
 
@@ -81,6 +82,9 @@ class _AgentPresetFormState extends State<AgentPresetForm> {
     _pinnedContextController.dispose();
     _allowedToolsController.dispose();
     _workDirController.dispose();
+    for (final c in _allowedDirsControllers) {
+      c.dispose();
+    }
     super.dispose();
   }
 
@@ -227,6 +231,7 @@ class _AgentPresetFormState extends State<AgentPresetForm> {
               approvalMode: _approvalMode,
               allowedToolsController: _allowedToolsController,
               workDirController: _workDirController,
+              allowedDirsControllers: _allowedDirsControllers,
               onUseAllowAllChanged: (value) {
                 setState(() {
                   _useAllowAll = value;
@@ -240,6 +245,17 @@ class _AgentPresetFormState extends State<AgentPresetForm> {
               onApprovalModeChanged: (value) {
                 setState(() {
                   _approvalMode = value;
+                });
+              },
+              onAddAllowedDir: () {
+                setState(() {
+                  _allowedDirsControllers.add(TextEditingController());
+                });
+              },
+              onRemoveAllowedDir: (index) {
+                setState(() {
+                  _allowedDirsControllers[index].dispose();
+                  _allowedDirsControllers.removeAt(index);
                 });
               },
             ),
@@ -368,6 +384,14 @@ class _AgentPresetFormState extends State<AgentPresetForm> {
     _allowedToolsController.text = settings.allowedTools;
     _workDirController.text = settings.workDir;
 
+    for (final c in _allowedDirsControllers) {
+      c.dispose();
+    }
+    _allowedDirsControllers.clear();
+    for (final path in settings.allowedDirs) {
+      _allowedDirsControllers.add(TextEditingController(text: path));
+    }
+
     _runner = runner;
     _model = modelName;
     _grade = grade;
@@ -448,6 +472,10 @@ class _AgentPresetFormState extends State<AgentPresetForm> {
           session: _session,
           authType: _authType,
           cliProvider: _authType == 'cli' ? _cliProvider : null,
+          allowedDirs: _allowedDirsControllers
+              .map((c) => c.text.trim())
+              .where((s) => s.isNotEmpty)
+              .toList(growable: false),
         ),
       ),
     );
@@ -563,9 +591,12 @@ class _RunnerSettings extends StatelessWidget {
     required this.approvalMode,
     required this.allowedToolsController,
     required this.workDirController,
+    required this.allowedDirsControllers,
     required this.onUseAllowAllChanged,
     required this.onCodexModeChanged,
     required this.onApprovalModeChanged,
+    required this.onAddAllowedDir,
+    required this.onRemoveAllowedDir,
   });
 
   final String runner;
@@ -575,9 +606,14 @@ class _RunnerSettings extends StatelessWidget {
   final String approvalMode;
   final TextEditingController allowedToolsController;
   final TextEditingController workDirController;
+  final List<TextEditingController> allowedDirsControllers;
   final ValueChanged<bool> onUseAllowAllChanged;
   final ValueChanged<String> onCodexModeChanged;
   final ValueChanged<String> onApprovalModeChanged;
+  final VoidCallback onAddAllowedDir;
+  final ValueChanged<int> onRemoveAllowedDir;
+
+  static const int _maxAllowedDirs = 20;
 
   @override
   Widget build(BuildContext context) {
@@ -591,33 +627,46 @@ class _RunnerSettings extends StatelessWidget {
           onChanged: enabled ? onUseAllowAllChanged : null,
         );
       case 'codex':
-        return _ResponsiveFields(
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            DropdownButtonFormField<String>(
-              initialValue: codexMode,
-              decoration: const InputDecoration(
-                labelText: 'codex_mode',
-                prefixIcon: Icon(Icons.tune_outlined),
-              ),
-              items: _codexModes
-                  .map(
-                    (mode) => DropdownMenuItem(
-                      value: mode,
-                      child: Text(mode),
-                    ),
-                  )
-                  .toList(),
-              onChanged: enabled
-                  ? (value) => onCodexModeChanged(value ?? 'never')
-                  : null,
+            _ResponsiveFields(
+              children: [
+                DropdownButtonFormField<String>(
+                  initialValue: codexMode,
+                  decoration: const InputDecoration(
+                    labelText: 'codex_mode',
+                    prefixIcon: Icon(Icons.tune_outlined),
+                  ),
+                  items: _codexModes
+                      .map(
+                        (mode) => DropdownMenuItem(
+                          value: mode,
+                          child: Text(mode),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: enabled
+                      ? (value) => onCodexModeChanged(value ?? 'never')
+                      : null,
+                ),
+                TextFormField(
+                  controller: workDirController,
+                  enabled: enabled,
+                  decoration: const InputDecoration(
+                    labelText: 'work_dir',
+                    prefixIcon: Icon(Icons.folder_open_outlined),
+                  ),
+                ),
+              ],
             ),
-            TextFormField(
-              controller: workDirController,
+            const SizedBox(height: 12),
+            _AllowedDirsSection(
+              controllers: allowedDirsControllers,
               enabled: enabled,
-              decoration: const InputDecoration(
-                labelText: 'work_dir',
-                prefixIcon: Icon(Icons.folder_open_outlined),
-              ),
+              onAdd: onAddAllowedDir,
+              onRemove: onRemoveAllowedDir,
+              maxCount: _maxAllowedDirs,
             ),
           ],
         );
@@ -841,6 +890,85 @@ class _CliAuthHint extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _AllowedDirsSection extends StatelessWidget {
+  const _AllowedDirsSection({
+    required this.controllers,
+    required this.enabled,
+    required this.onAdd,
+    required this.onRemove,
+    required this.maxCount,
+  });
+
+  final List<TextEditingController> controllers;
+  final bool enabled;
+  final VoidCallback onAdd;
+  final ValueChanged<int> onRemove;
+  final int maxCount;
+
+  @override
+  Widget build(BuildContext context) {
+    final canAdd = enabled && controllers.length < maxCount;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            const Icon(Icons.folder_special_outlined, size: 20),
+            const SizedBox(width: 8),
+            Text(
+              'Allowed Directories',
+              style: Theme.of(context).textTheme.labelLarge,
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        if (controllers.isNotEmpty)
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 240),
+            child: SingleChildScrollView(
+              child: Column(
+                children: [
+                  for (int i = 0; i < controllers.length; i++)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: TextFormField(
+                              controller: controllers[i],
+                              enabled: enabled,
+                              decoration: InputDecoration(
+                                hintText: r'C:\path\to\dir',
+                                prefixIcon:
+                                    const Icon(Icons.folder_outlined),
+                                isDense: true,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          IconButton(
+                            tooltip: 'Remove',
+                            icon: const Icon(Icons.close),
+                            onPressed:
+                                enabled ? () => onRemove(i) : null,
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        TextButton.icon(
+          onPressed: canAdd ? onAdd : null,
+          icon: const Icon(Icons.add),
+          label: const Text('Add path'),
+        ),
+      ],
     );
   }
 }

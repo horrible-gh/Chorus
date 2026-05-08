@@ -1,12 +1,25 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/agent_preset.dart';
 import '../models/chat.dart';
 import '../models/chat_context_options.dart';
 import '../services/chat_push_service.dart';
 import '../services/chat_service.dart';
+
+enum GenerationState {
+  idle,
+  sending,
+  generating,
+  cancelRequested,
+  cancelled,
+  completed,
+  failed,
+  timeout,
+}
 
 class ChatProvider extends ChangeNotifier {
   ChatProvider(this._service, {String Function()? getToken})
@@ -38,6 +51,10 @@ class ChatProvider extends ChangeNotifier {
   bool _isMutatingParticipants = false;
   String? _error;
   String? _lastUserId;
+  GenerationState _generationState = GenerationState.idle;
+  String? _generationId;
+  String? _generationTaskId;
+  bool _cancelDebounceActive = false;
 
   List<ChatRoom> get rooms => _rooms;
   List<AgentPreset> get agents => _agents;
@@ -53,6 +70,8 @@ class ChatProvider extends ChangeNotifier {
   bool get isMutatingParticipants => _isMutatingParticipants;
   String? get error => _error;
   ChatPushStatus get pushStatus => _pushService.status;
+  GenerationState get generationState => _generationState;
+  String? get generationId => _generationId;
 
   ChatRoom? get selectedRoom {
     for (final room in _rooms) {
@@ -110,9 +129,35 @@ class ChatProvider extends ChangeNotifier {
 
   Future<void> selectRoom(String roomId, String userId) async {
     if (_selectedRoomId != roomId) {
+      // Fire-and-forget cancel for the active generation when leaving the room.
+      if ((_generationState == GenerationState.generating ||
+              _generationState == GenerationState.cancelRequested) &&
+          _generationId != null) {
+        final prevRoomId = _selectedRoomId;
+        final genId = _generationId!;
+        if (prevRoomId != null) {
+          unawaited(
+            _service
+                .cancelGeneration(
+                  roomId: prevRoomId,
+                  generationId: genId,
+                  requestSource: 'room_leave',
+                )
+                .catchError((Object e) {
+              debugPrint('[ChatProvider.selectRoom] auto-cancel error: $e');
+              return <String, dynamic>{};
+            }),
+          );
+        }
+      }
+      final prevRoomId = _selectedRoomId;
+      if (prevRoomId != null) unawaited(_clearGenerationState(prevRoomId));
       _hasPendingTasks = false;
       _pendingTaskIds = const {};
       _pendingTasksCompleted = 0;
+      _generationState = GenerationState.idle;
+      _generationId = null;
+      _generationTaskId = null;
     }
     _selectedRoomId = roomId;
     _lastUserId = userId;
@@ -133,6 +178,9 @@ class ChatProvider extends ChangeNotifier {
       _replaceRoom(details.room);
       _isLoadingMessages = false;
       notifyListeners();
+      if (!_hasPendingTasks && _generationState == GenerationState.idle) {
+        await _restoreGenerationState(roomId);
+      }
     } catch (error, stackTrace) {
       debugPrint('[ChatProvider.selectRoom] $error');
       debugPrint('$stackTrace');
@@ -189,6 +237,9 @@ class ChatProvider extends ChangeNotifier {
 
     _lastUserId = userId;
     _isSending = true;
+    _generationState = GenerationState.sending;
+    _generationId = null;
+    _generationTaskId = null;
     _error = null;
     notifyListeners();
 
@@ -214,16 +265,31 @@ class ChatProvider extends ChangeNotifier {
         _pendingTaskIds = workerTaskIds;
         _pendingTasksCompleted = 0;
         _hasPendingTasks = true;
+        _generationId = result.generationId;
+        _generationTaskId = result.createdTasks
+            .where((t) => t.taskId.startsWith('task_'))
+            .map((t) => t.taskId)
+            .firstOrNull;
+        _generationState = GenerationState.generating;
+        if (_generationId != null && _generationTaskId != null) {
+          unawaited(_saveGenerationState(roomId, _generationId!, _generationTaskId!));
+        }
+      } else {
+        _generationState = GenerationState.idle;
       }
       notifyListeners();
       if (workerTaskIds.isNotEmpty) {
         unawaited(_pollAgentResponses(roomId));
+      } else {
+        // For single-agent sync responses, fetch messages once to display AI response
+        unawaited(_fetchMessagesOnce(roomId));
       }
       return result;
     } catch (error, stackTrace) {
       debugPrint('[ChatProvider.sendMessage] $error');
       debugPrint('$stackTrace');
       _isSending = false;
+      _generationState = GenerationState.idle;
       _error = 'Unable to send the message.';
       notifyListeners();
       return null;
@@ -244,13 +310,50 @@ class ChatProvider extends ChangeNotifier {
           roomId: roomId,
           viewerUserId: userId,
         );
-        final completedTaskIds = _completedPendingTaskIdsFromMessages(messages);
-        final pendingTaskIds = _pendingTaskIds.difference(completedTaskIds);
-        if (pendingTaskIds.isNotEmpty) {
-          completedTaskIds.addAll(await _failedPendingTaskIds(pendingTaskIds));
+        final successIds = _completedPendingTaskIdsFromMessages(messages);
+        var stillPending = _pendingTaskIds.difference(successIds);
+
+        var failedIds = const <String>{};
+        if (stillPending.isNotEmpty) {
+          failedIds = await _failedPendingTaskIds(stillPending);
+          stillPending = stillPending.difference(failedIds);
         }
+
+        var cancelledIds = const <String>{};
+        if (stillPending.isNotEmpty) {
+          cancelledIds = await _cancelledPendingTaskIds(stillPending);
+        }
+
         _messages = messages;
-        _applyPendingTaskProgress(completedTaskIds);
+
+        final allCompletedIds = {...successIds, ...failedIds, ...cancelledIds};
+        _pendingTasksCompleted =
+            allCompletedIds.where(_pendingTaskIds.contains).length;
+
+        if (_pendingTasksCompleted >= _pendingTaskIds.length) {
+          _hasPendingTasks = false;
+          _pendingTaskIds = const {};
+          _pendingTasksCompleted = 0;
+
+          if (cancelledIds.isNotEmpty &&
+              (_generationState == GenerationState.generating ||
+                  _generationState == GenerationState.cancelRequested)) {
+            _generationState = GenerationState.cancelled;
+          } else if (failedIds.isNotEmpty &&
+              (_generationState == GenerationState.generating ||
+                  _generationState == GenerationState.cancelRequested)) {
+            _generationState = GenerationState.failed;
+          } else if (_generationState == GenerationState.generating ||
+              _generationState == GenerationState.cancelRequested) {
+            _generationState = GenerationState.completed;
+          }
+
+          final rId = _selectedRoomId;
+          if (rId != null) unawaited(_clearGenerationState(rId));
+          _generationId = null;
+          _generationTaskId = null;
+        }
+
         notifyListeners();
       } catch (error, stackTrace) {
         debugPrint('[ChatProvider._pollAgentResponses] $error');
@@ -264,7 +367,37 @@ class ChatProvider extends ChangeNotifier {
       _hasPendingTasks = false;
       _pendingTaskIds = const {};
       _pendingTasksCompleted = 0;
+      if (_generationState == GenerationState.generating ||
+          _generationState == GenerationState.cancelRequested) {
+        _generationState = GenerationState.timeout;
+      }
+      final rId = _selectedRoomId;
+      if (rId != null) unawaited(_clearGenerationState(rId));
+      _generationId = null;
+      _generationTaskId = null;
       notifyListeners();
+    }
+  }
+
+  Future<void> _fetchMessagesOnce(String roomId) async {
+    // Wait a moment for the AI response to be saved on server
+    await Future.delayed(const Duration(seconds: 1));
+    
+    if (roomId != _selectedRoomId) return;
+
+    final userId = _lastUserId;
+    if (userId == null || userId.isEmpty) return;
+
+    try {
+      final messages = await _service.listMessages(
+        roomId: roomId,
+        viewerUserId: userId,
+      );
+      _messages = messages;
+      notifyListeners();
+    } catch (error, stackTrace) {
+      debugPrint('[ChatProvider._fetchMessagesOnce] $error');
+      debugPrint('$stackTrace');
     }
   }
 
@@ -317,6 +450,194 @@ class ChatProvider extends ChangeNotifier {
     return failedTaskIds;
   }
 
+  Future<Set<String>> _cancelledPendingTaskIds(
+    Set<String> pendingTaskIds,
+  ) async {
+    if (pendingTaskIds.isEmpty) return const <String>{};
+    final taskIds = pendingTaskIds
+        .where((id) => id.startsWith('task_'))
+        .toList(growable: false);
+    if (taskIds.isEmpty) return const <String>{};
+    final tasks = await Future.wait(taskIds.map(_service.getTask));
+    final cancelledIds = <String>{};
+    for (var i = 0; i < tasks.length; i++) {
+      if (tasks[i]['status']?.toString() == 'cancelled') {
+        cancelledIds.add(taskIds[i]);
+      }
+    }
+    return cancelledIds;
+  }
+
+  Future<void> cancelGeneration(String userId) async {
+    if (_cancelDebounceActive) return;
+    if (_generationId == null) return;
+    if (_generationState != GenerationState.generating) return;
+
+    final roomId = _selectedRoomId;
+    if (roomId == null) return;
+
+    _cancelDebounceActive = true;
+    Future.delayed(const Duration(milliseconds: 500), () {
+      _cancelDebounceActive = false;
+    });
+
+    _generationState = GenerationState.cancelRequested;
+    notifyListeners();
+
+    try {
+      final result = await _service.cancelGeneration(
+        roomId: roomId,
+        generationId: _generationId!,
+        requestedByUserId: userId,
+      );
+
+      final httpStatus = result['_http_status'] as int? ?? 0;
+
+      if (httpStatus == 200) {
+        if (_generationState == GenerationState.cancelRequested ||
+            _generationState == GenerationState.generating) {
+          _hasPendingTasks = false;
+          _pendingTaskIds = const {};
+          _pendingTasksCompleted = 0;
+          _generationState = GenerationState.cancelled;
+          unawaited(_clearGenerationState(roomId));
+          _generationId = null;
+          _generationTaskId = null;
+        }
+      } else if (httpStatus == 409) {
+        final errorCode = result['error_code']?.toString() ?? '';
+        if (errorCode == 'GENERATION_ALREADY_COMPLETED') {
+          if (_generationState == GenerationState.cancelRequested ||
+              _generationState == GenerationState.generating) {
+            _hasPendingTasks = false;
+            _pendingTaskIds = const {};
+            _pendingTasksCompleted = 0;
+            _generationState = GenerationState.completed;
+            unawaited(_clearGenerationState(roomId));
+            _generationId = null;
+            _generationTaskId = null;
+            unawaited(_fetchMessagesOnce(roomId));
+          }
+        } else if (errorCode == 'GENERATION_ALREADY_CANCELLED') {
+          if (_generationState == GenerationState.cancelRequested ||
+              _generationState == GenerationState.generating) {
+            _hasPendingTasks = false;
+            _pendingTaskIds = const {};
+            _pendingTasksCompleted = 0;
+            _generationState = GenerationState.cancelled;
+            unawaited(_clearGenerationState(roomId));
+            _generationId = null;
+            _generationTaskId = null;
+          }
+        } else if (errorCode == 'GENERATION_ALREADY_FAILED') {
+          if (_generationState == GenerationState.cancelRequested ||
+              _generationState == GenerationState.generating) {
+            _hasPendingTasks = false;
+            _pendingTaskIds = const {};
+            _pendingTasksCompleted = 0;
+            _generationState = GenerationState.failed;
+            unawaited(_clearGenerationState(roomId));
+            _generationId = null;
+            _generationTaskId = null;
+          }
+        } else {
+          if (_generationState == GenerationState.cancelRequested) {
+            _generationState = GenerationState.generating;
+          }
+        }
+      } else {
+        if (_generationState == GenerationState.cancelRequested) {
+          _generationState = GenerationState.generating;
+        }
+      }
+    } catch (error, stackTrace) {
+      debugPrint('[ChatProvider.cancelGeneration] $error');
+      debugPrint('$stackTrace');
+      if (_generationState == GenerationState.cancelRequested) {
+        _generationState = GenerationState.generating;
+      }
+    }
+
+    notifyListeners();
+  }
+
+  Future<void> _saveGenerationState(
+    String roomId,
+    String generationId,
+    String taskId,
+  ) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        'chorus_generation_$roomId',
+        jsonEncode({'task_id': taskId, 'generation_id': generationId}),
+      );
+    } catch (e) {
+      debugPrint('[ChatProvider._saveGenerationState] $e');
+    }
+  }
+
+  Future<void> _clearGenerationState(String roomId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('chorus_generation_$roomId');
+    } catch (e) {
+      debugPrint('[ChatProvider._clearGenerationState] $e');
+    }
+  }
+
+  Future<void> _restoreGenerationState(String roomId) async {
+    if (_hasPendingTasks ||
+        _generationState == GenerationState.generating ||
+        _generationState == GenerationState.cancelRequested) {
+      return;
+    }
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final key = 'chorus_generation_$roomId';
+      final savedJson = prefs.getString(key);
+      if (savedJson == null) return;
+      final data = jsonDecode(savedJson) as Map<String, dynamic>;
+      final taskId = data['task_id'] as String?;
+      final generationId = data['generation_id'] as String?;
+      if (taskId == null || generationId == null) {
+        await prefs.remove(key);
+        return;
+      }
+      try {
+        final taskData = await _service.getTask(taskId);
+        final status = taskData['status']?.toString();
+        if (status == 'running' ||
+            status == 'queued' ||
+            status == 'cancel_requested') {
+          _generationId = generationId;
+          _generationTaskId = taskId;
+          _pendingTaskIds = {taskId};
+          _pendingTasksCompleted = 0;
+          _hasPendingTasks = true;
+          _generationState = GenerationState.generating;
+          notifyListeners();
+          unawaited(_pollAgentResponses(roomId));
+        } else if (status == 'cancelled') {
+          _generationState = GenerationState.cancelled;
+          _generationId = generationId;
+          notifyListeners();
+          await prefs.remove(key);
+        } else {
+          await prefs.remove(key);
+        }
+      } catch (e) {
+        debugPrint('[ChatProvider._restoreGenerationState] getTask error: $e');
+        try {
+          await prefs.remove(key);
+        } catch (_) {}
+      }
+    } catch (e) {
+      debugPrint('[ChatProvider._restoreGenerationState] $e');
+    }
+  }
+
+
   void _applyPendingTaskProgress(Set<String> completedTaskIds) {
     if (_pendingTaskIds.isEmpty) {
       return;
@@ -327,6 +648,14 @@ class ChatProvider extends ChangeNotifier {
       _hasPendingTasks = false;
       _pendingTaskIds = const {};
       _pendingTasksCompleted = 0;
+      if (_generationState == GenerationState.generating ||
+          _generationState == GenerationState.cancelRequested) {
+        _generationState = GenerationState.completed;
+      }
+      final rId = _selectedRoomId;
+      if (rId != null) unawaited(_clearGenerationState(rId));
+      _generationId = null;
+      _generationTaskId = null;
     }
   }
 

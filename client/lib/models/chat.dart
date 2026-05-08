@@ -153,17 +153,20 @@ class ChatCreatedTask {
     required this.taskId,
     required this.agentId,
     required this.status,
+    this.generationId,
   });
 
   final String taskId;
   final String agentId;
   final String status;
+  final String? generationId;
 
   factory ChatCreatedTask.fromJson(Map<String, dynamic> json) {
     return ChatCreatedTask(
       taskId: _string(json['task_id']),
       agentId: _string(json['agent_id']),
       status: _string(json['status']),
+      generationId: _nullableString(json['generation_id']),
     );
   }
 }
@@ -172,10 +175,12 @@ class MessageSendResult {
   const MessageSendResult({
     required this.message,
     required this.createdTasks,
+    this.generationId,
   });
 
   final ChatMessage message;
   final List<ChatCreatedTask> createdTasks;
+  final String? generationId;
 }
 
 String _string(Object? value) => value?.toString() ?? '';
