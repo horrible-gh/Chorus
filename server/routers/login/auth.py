@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from fastapi import Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer
 from config import settings
+import redis
 
 import LogAssist.log as Logger
 
@@ -11,12 +12,17 @@ SECRET_KEY = settings.SECRET_KEY
 ALGORITHM = "HS256"
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token")
 
-# ✅ Redis or in-memory blacklist store (example)
-token_blacklist = set()  # In production, use Redis or equivalent
+# Redis client for blacklist verification
+redis_client = redis.Redis(
+    host=settings.REDIS_HOST,
+    port=settings.REDIS_PORT,
+    db=settings.REDIS_DB,
+    decode_responses=True
+)
 
 def is_token_blacklisted(token: str) -> bool:
-    """ Check if the token is on the blacklist """
-    return token in token_blacklist
+    """ Check if the token is on the blacklist in Redis """
+    return redis_client.exists(f"blacklist:{token}") > 0
 
 def verify_token(token: str = Depends(oauth2_scheme)):
     #Logger.debug(f"🔍 Received token: {token}")

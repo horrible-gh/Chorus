@@ -10,7 +10,7 @@ from fastapi import APIRouter, Header, Query, WebSocket, WebSocketDisconnect
 
 from config import settings
 from modules.push_manager import push_manager
-from routers.login.auth import token_blacklist
+from routers.login.auth import is_token_blacklisted
 
 import LogAssist.log as logger
 
@@ -28,7 +28,7 @@ def _verify_ws_token(authorization: str | None) -> str | None:
     if not authorization or not authorization.startswith("Bearer "):
         return None
     token = authorization[len("Bearer "):]
-    if token in token_blacklist:
+    if is_token_blacklisted(token):
         return None
     try:
         payload = jwt.decode(

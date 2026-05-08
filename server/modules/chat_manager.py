@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -84,6 +85,7 @@ class ChorusStore:
         "tok": ("provider_tokens", "token_id"),
         "ufile": ("uploaded_files", "file_id"),
         "mr": ("model_registry", "model_id"),
+        "cancellog": ("generation_cancel_log", "log_id"),
     }
 
     def __init__(self):
@@ -604,6 +606,9 @@ class ChorusStore:
         row["input_json"] = _json_load(row["input_json"], {})
         row["constraints_json"] = _json_load(row["constraints_json"], {})
         row["result_json"] = _json_load(row["result_json"], None)
+        # generation cancel columns may be absent in older rows
+        for col in ("generation_id", "room_id", "source_message_id", "cancelled_at", "cancel_requested_at"):
+            row.setdefault(col, None)
         return row
 
     def insert_task(self, task: dict) -> dict:
@@ -658,6 +663,8 @@ class ChorusStore:
             "input_json", "constraints_json", "result_json", "failure_code",
             "failure_text", "next_run_at", "last_progress_at",
             "last_progress_message", "updated_at", "completed_at",
+            "generation_id", "room_id", "source_message_id",
+            "cancelled_at", "cancel_requested_at",
         }
         sets: list[str] = []
         values: list[Any] = []
@@ -670,6 +677,34 @@ class ChorusStore:
             values.append(task_id)
             self._execute(f"UPDATE tasks SET {', '.join(sets)} WHERE task_id = ?", values)
         return self.get_task(task_id)
+
+    def get_task_by_generation_id(self, generation_id: str) -> Optional[dict]:
+        row = self._fetch_one(
+            "SELECT * FROM tasks WHERE generation_id = ?",
+            [generation_id],
+        )
+        return self._task_from_row(row)
+
+    def insert_cancel_log(self, log: dict) -> dict:
+        self._execute(
+            """INSERT INTO generation_cancel_log
+               (log_id, generation_id, task_id, room_id, requested_by_user_id,
+                request_source, result, result_detail, requested_at, processed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            [
+                log["log_id"],
+                log["generation_id"],
+                log["task_id"],
+                log["room_id"],
+                log.get("requested_by_user_id"),
+                log["request_source"],
+                log["result"],
+                log.get("result_detail"),
+                log["requested_at"],
+                log.get("processed_at"),
+            ],
+        )
+        return log
 
     # ── worker_leases ─────────────────────────────────────────────────────
 
@@ -1092,7 +1127,7 @@ def send_message(room_id: str, payload: dict) -> tuple[dict, List[dict]]:
                     context_messages.append({"role": role, "content": pm["text"]})
 
         tasks = [create_agent_response_task(room_id, message, agent_id, context_messages=context_messages or None) for agent_id in target_agent_ids]
-        return message, [{"task_id": task["task_id"], "agent_id": task["assigned_agent_id"], "status": task["status"]} for task in tasks]
+        return message, [{"task_id": task["task_id"], "agent_id": task["assigned_agent_id"], "status": task["status"], "generation_id": task.get("generation_id")} for task in tasks]
 
 
 def list_visible_messages(
@@ -1219,6 +1254,14 @@ RUNNER_TOKEN_ENV: dict[str, tuple[str, str]] = {
 
 def _build_subprocess_env(runner: str, provider_token_id: Optional[str] = None) -> dict:
     env = os.environ.copy()
+    
+    # copilot runner의 경우 npm PATH 확인 및 추가
+    if runner == "copilot":
+        npm_bin_path = os.path.expanduser(r"~\AppData\Roaming\npm")
+        if npm_bin_path not in env.get("PATH", ""):
+            logger.warning(f"[_build_subprocess_env] npm bin path not in PATH, adding: {npm_bin_path}")
+            env["PATH"] = npm_bin_path + os.pathsep + env.get("PATH", "")
+    
     if not provider_token_id:
         return env
     expected = RUNNER_TOKEN_ENV.get(runner)
@@ -1252,6 +1295,8 @@ def _call_ai_sync(
     user_text: str,
     pinned_context: Optional[str] = None,
     provider_token_id: Optional[str] = None,
+    work_dir: Optional[str] = None,
+    allowed_dirs: Optional[List[str]] = None,
 ) -> str:
     """
     Call AI CLI synchronously and return the response text.
@@ -1273,6 +1318,7 @@ def _call_ai_sync(
     env = _build_subprocess_env(runner, provider_token_id)
 
     if runner == "copilot":
+        logger.debug(f"[_call_ai_sync] copilot executable resolve: shutil.which('copilot')={shutil.which('copilot')!r}")
         executable = shutil.which("copilot") or "copilot"
         safe_prompt = prompt.replace('\r\n', '\n').replace('\n', ' ')
         result = subprocess.run(
@@ -1284,6 +1330,7 @@ def _call_ai_sync(
             cwd=PROJECT_ROOT,
             env=env,
         )
+        logger.debug(f"[_call_ai_sync] copilot result: RC={result.returncode}, stdout_len={len(result.stdout) if result.stdout else 0}, stderr_snippet={result.stderr[:200]!r}")
         output = _strip_ansi_text(result.stdout)
 
     elif runner == "claude":
@@ -1316,16 +1363,22 @@ def _call_ai_sync(
 
     elif runner == "codex":
         executable = shutil.which("codex") or "codex"
+        _codex_work_dir = work_dir if work_dir else str(PROJECT_ROOT)
+        _codex_cmd: List[str] = [executable, "-C", _codex_work_dir]
+        for _dir_path in (allowed_dirs or []):
+            _trimmed = _dir_path.strip()
+            if not _trimmed:
+                continue
+            _codex_cmd.extend(["--add-dir", _trimmed])
+        _codex_cmd.extend([
+            "--ask-for-approval", "never",
+            "--sandbox", "workspace-write",
+            "exec",
+            "--model", model,
+            "-",
+        ])
         result = subprocess.run(
-            [
-                executable,
-                "-C", str(PROJECT_ROOT),
-                "--ask-for-approval", "never",
-                "--sandbox", "workspace-write",
-                "exec",
-                "--model", model,
-                "-",
-            ],
+            _codex_cmd,
             input=prompt,
             capture_output=True,
             text=True,
@@ -1467,6 +1520,8 @@ def send_message_sync(room_id: str, payload: dict) -> tuple[dict, List[dict]]:
 
     agent_settings = _json_load(agent.get("settings_json"), {})
     provider_token_id = agent_settings.get("provider_token_id")
+    work_dir = agent_settings.get("work_dir") or None
+    allowed_dirs = agent_settings.get("allowed_dirs") or []
 
     ai_text = _call_ai_sync(
         runner=routing_decision["selected_runner"],
@@ -1476,6 +1531,8 @@ def send_message_sync(room_id: str, payload: dict) -> tuple[dict, List[dict]]:
         user_text=payload["content"]["text"],
         pinned_context=agent.get("pinned_context"),
         provider_token_id=provider_token_id,
+        work_dir=work_dir,
+        allowed_dirs=allowed_dirs,
     )
 
     # ── Phase 3: save AI response (inside transaction) ──

@@ -136,7 +136,7 @@ def create_agent_response_task(room_id: str, message: dict, agent_id: str, conte
     preferred_runner = (agent.get("default_runner") or "copilot") if agent else "copilot"
     default_model = agent.get("default_model") if agent else None
     default_grade = agent.get("default_grade") if agent else None
-    return create_task(
+    task = create_task(
         {
             "source": "agent_chat",
             "title": f"Agent response for {message['message_id']}",
@@ -150,6 +150,17 @@ def create_agent_response_task(room_id: str, message: dict, agent_id: str, conte
             "constraints": {"can_modify_code": False, "can_modify_index": False, "requires_review": False},
         }
     )
+    generation_id = "gen_" + str(uuid.uuid4())
+    task = STORE.update_task(
+        task["task_id"],
+        {
+            "generation_id": generation_id,
+            "room_id": room_id,
+            "source_message_id": message["message_id"],
+            "updated_at": now_iso(),
+        },
+    )
+    return task
 
 
 def list_tasks(status: Optional[str] = None) -> List[dict]:
@@ -391,6 +402,8 @@ async def _dispatch_one_task(task: dict) -> None:
         except Exception:
             settings = {}
     provider_token_id = settings.get("provider_token_id")
+    work_dir = settings.get("work_dir") or None
+    allowed_dirs = settings.get("allowed_dirs") or []
 
     logger.debug(f"[poll_loop] AI call start — task_id={task_id!r} runner={runner!r} model={model!r}")
     try:
@@ -403,6 +416,8 @@ async def _dispatch_one_task(task: dict) -> None:
             user_text=instruction,
             pinned_context=agent.get("pinned_context") if agent else None,
             provider_token_id=provider_token_id,
+            work_dir=work_dir,
+            allowed_dirs=allowed_dirs,
         )
         logger.debug(f"[poll_loop] AI call succeeded — task_id={task_id!r}")
         complete_task(task_id, {
