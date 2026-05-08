@@ -6,7 +6,7 @@ It is built for developers who use multiple AI assistants and CLI tools, but do 
 
 Chorus provides a local-first workspace where you can organize AI agents, route work by purpose, manage reusable presets, and keep conversations moving in real time.
 
-![Chorus preview](docs/assets/preview.png)
+![Chorus chat workspace screenshot](docs/assets/chorus-screenshot.png)
 
 ---
 
