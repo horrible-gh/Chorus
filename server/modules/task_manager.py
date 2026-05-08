@@ -11,7 +11,7 @@ import LogAssist.log as logger
 from modules.chat_manager import STORE, now_iso
 
 # Server-side task statuses that map to "active generation" states
-_CANCELLABLE_STATUSES = {"queued", "running", "retry_scheduled", "cancel_requested"}
+_CANCELLABLE_STATUSES = {"queued", "running", "retry_scheduled"}
 # Server-side task statuses that map to terminal states
 _TERMINAL_COMPLETED = {"done", "review_required"}
 _TERMINAL_FAILED = {"failed"}
@@ -53,7 +53,7 @@ def cancel_generation(
         return {
             "generation_id": generation_id,
             "error_code": "GENERATION_NOT_FOUND",
-            "message": "해당 generation_id를 찾을 수 없습니다.",
+            "message": "The specified generation_id was not found.",
         }, 404
 
     # Room ownership check
@@ -71,7 +71,7 @@ def cancel_generation(
         )
         return {
             "error_code": "PERMISSION_DENIED",
-            "message": "해당 generation에 대한 취소 권한이 없습니다.",
+            "message": "You do not have permission to cancel this generation.",
         }, 403
 
     status = task.get("status", "")
@@ -94,7 +94,7 @@ def cancel_generation(
             "room_id": room_id,
             "status": "already_completed",
             "error_code": "GENERATION_ALREADY_COMPLETED",
-            "message": "AI 생성이 이미 완료된 상태입니다.",
+            "message": "The AI generation has already completed.",
             "completed_at": completed_at,
         }, 409
 
@@ -115,7 +115,7 @@ def cancel_generation(
             "room_id": room_id,
             "status": "already_cancelled",
             "error_code": "GENERATION_ALREADY_CANCELLED",
-            "message": "이미 취소된 생성 요청입니다.",
+            "message": "The generation request has already been cancelled.",
             "cancelled_at": cancelled_at,
         }, 409
 
@@ -135,7 +135,7 @@ def cancel_generation(
             "room_id": room_id,
             "status": "already_failed",
             "error_code": "GENERATION_ALREADY_FAILED",
-            "message": "이미 실패한 생성 요청입니다.",
+            "message": "The generation request has already failed.",
         }, 409
 
     # Perform the cancellation
@@ -143,19 +143,12 @@ def cancel_generation(
     cancelled_at = now_iso()
     try:
         with STORE.transaction():
-            # Mark as cancel_requested first, then immediately cancelled
-            STORE.update_task(
-                task_id,
-                {
-                    "status": "cancel_requested",
-                    "cancel_requested_at": requested_at,
-                    "updated_at": requested_at,
-                },
-            )
+            # Single UPDATE to cancelled state with all timing fields
             STORE.update_task(
                 task_id,
                 {
                     "status": "cancelled",
+                    "cancel_requested_at": requested_at,
                     "cancelled_at": cancelled_at,
                     "updated_at": cancelled_at,
                 },
@@ -179,7 +172,7 @@ def cancel_generation(
             "room_id": room_id,
             "status": "cancelled",
             "cancelled_at": cancelled_at,
-            "message": "생성이 중단되었습니다.",
+            "message": "Generation has been cancelled.",
         }, 200
 
     except Exception as exc:
@@ -200,7 +193,7 @@ def cancel_generation(
             pass
         return {
             "error_code": "SERVER_ERROR",
-            "message": "서버 오류가 발생했습니다.",
+            "message": "An internal server error occurred.",
         }, 500
 
 

@@ -289,7 +289,13 @@ def complete_task(task_id: str, payload: dict) -> tuple[dict, dict]:
                 "finished_at": now,
             }
         )
+        if task["status"] == "cancelled":
+            logger.info(f"[complete_task] task {task_id!r} is already cancelled; skipping status update and message persist")
+            return task, run
+
         result_json = {"summary": payload.get("summary"), "artifact_paths": payload.get("artifact_paths", [])}
+        if payload.get("context_usage"):
+            result_json["context_usage"] = payload["context_usage"]
         task = STORE.update_task(
             task_id,
             {
@@ -405,9 +411,16 @@ async def _dispatch_one_task(task: dict) -> None:
     work_dir = settings.get("work_dir") or None
     allowed_dirs = settings.get("allowed_dirs") or []
 
+    fresh_task = STORE.get_task(task_id)
+    if fresh_task and fresh_task.get("status") == "cancelled":
+        logger.info(f"[poll_loop] task {task_id!r} cancelled before AI call; releasing lease and skipping")
+        with STORE.transaction():
+            STORE.update_lease(lease_id, {"status": "released", "released_at": now_iso()})
+        return
+
     logger.debug(f"[poll_loop] AI call start — task_id={task_id!r} runner={runner!r} model={model!r}")
     try:
-        ai_text = await asyncio.to_thread(
+        ai_text, context_usage = await asyncio.to_thread(
             _call_ai_sync,
             runner=runner,
             model=model,
@@ -420,11 +433,17 @@ async def _dispatch_one_task(task: dict) -> None:
             allowed_dirs=allowed_dirs,
         )
         logger.debug(f"[poll_loop] AI call succeeded — task_id={task_id!r}")
+        try:
+            from routers.auth.provider_management import mark_provider_available
+            mark_provider_available(runner)
+        except Exception as _mpa_exc:
+            logger.warning(f"[poll_loop] mark_provider_available skipped: {_mpa_exc}")
         complete_task(task_id, {
             "worker_id": _POLL_WORKER_ID,
             "lease_id": lease_id,
             "summary": ai_text,
             "artifact_paths": [],
+            "context_usage": context_usage,
         })
         logger.info(f"[poll_loop] task completed — task_id={task_id!r}")
     except Exception as e:

@@ -1153,6 +1153,21 @@ def list_visible_messages(
             continue
         if viewer_agent_id and any(item.get("recipient_agent_id") == viewer_agent_id for item in recipients):
             visible.append(message)
+    # Inject context_usage from task result_json for agent messages (no DB schema change needed).
+    for message in visible:
+        source_task_id = message.get("source_task_id")
+        if source_task_id:
+            task = STORE.get_task(source_task_id)
+            if task:
+                result_json = task.get("result_json") or {}
+                if isinstance(result_json, str):
+                    try:
+                        result_json = json.loads(result_json)
+                    except Exception:
+                        result_json = {}
+                context_usage = result_json.get("context_usage")
+                if context_usage:
+                    message["context_usage"] = context_usage
     return visible
 
 
@@ -1252,6 +1267,23 @@ RUNNER_TOKEN_ENV: dict[str, tuple[str, str]] = {
 }
 
 
+def _resolve_copilot_executable() -> str:
+    resolved = shutil.which("copilot")
+    if resolved and "copilotcli" not in resolved.lower():
+        return resolved
+
+    npm_copilot = os.path.expanduser(r"~\AppData\Roaming\npm\copilot.CMD")
+    if os.path.exists(npm_copilot):
+        if resolved:
+            logger.warning(
+                f"[_resolve_copilot_executable] ignoring VS Code copilotCli path: {resolved!r}; "
+                f"using npm copilot: {npm_copilot!r}"
+            )
+        return npm_copilot
+
+    return resolved or "copilot"
+
+
 def _build_subprocess_env(runner: str, provider_token_id: Optional[str] = None) -> dict:
     env = os.environ.copy()
     
@@ -1297,13 +1329,27 @@ def _call_ai_sync(
     provider_token_id: Optional[str] = None,
     work_dir: Optional[str] = None,
     allowed_dirs: Optional[List[str]] = None,
-) -> str:
+) -> tuple[str, Optional[dict]]:
     """
-    Call AI CLI synchronously and return the response text.
+    Call AI CLI synchronously and return (response_text, context_usage).
 
     Method A (Q005 approved): subprocess CLI call.
     runner CLI (copilot/claude/gemini/codex) must be on PATH and authenticated in the server environment.
+
+    context_usage structure:
+        {
+            "estimated_input_tokens": int,
+            "context_window": int,
+            "context_ratio": float,
+            "context_status": "OK" | "WARN" | "COMPRESS_SOON" | "BLOCK_OR_COMPRESS_NOW",
+            # Claude / Codex only (when CLI exposes usage):
+            "actual_input_tokens": int,
+            "actual_output_tokens": int,
+            "total_cost_usd": float | None,
+        }
     """
+    from modules.context_meter import compute_context_usage
+
     parts: List[str] = []
     if system_prompt:
         parts.append(system_prompt)
@@ -1315,23 +1361,46 @@ def _call_ai_sync(
     parts.append(f"User: {user_text}")
     prompt = "\n\n".join(parts)
 
+    context_usage = compute_context_usage(prompt, runner, model)
+    logger.debug(
+        f"[_call_ai_sync] context_usage estimate runner={runner!r} model={model!r} "
+        f"estimated_tokens={context_usage['estimated_input_tokens']} "
+        f"ratio={context_usage['context_ratio']} status={context_usage['context_status']!r}"
+    )
+
     env = _build_subprocess_env(runner, provider_token_id)
 
     if runner == "copilot":
-        logger.debug(f"[_call_ai_sync] copilot executable resolve: shutil.which('copilot')={shutil.which('copilot')!r}")
-        executable = shutil.which("copilot") or "copilot"
+        executable = _resolve_copilot_executable()
+        logger.debug(
+            f"[_call_ai_sync] copilot executable resolve: "
+            f"shutil.which('copilot')={shutil.which('copilot')!r}, selected={executable!r}"
+        )
         safe_prompt = prompt.replace('\r\n', '\n').replace('\n', ' ')
+        if executable.upper().endswith((".CMD", ".BAT")):
+            npm_basedir = os.path.dirname(executable)
+            npm_loader = os.path.join(npm_basedir, "node_modules", "@github", "copilot", "npm-loader.js")
+            node_exe = shutil.which("node")
+            if node_exe and os.path.exists(npm_loader):
+                _copilot_cmd = [node_exe, npm_loader, "--allow-all", "--model", model, "-p", safe_prompt]
+            else:
+                _copilot_cmd = ["cmd", "/c", executable, "--allow-all", "--model", model, "-p", safe_prompt]
+        else:
+            _copilot_cmd = [executable, "--allow-all", "--model", model, "-p", safe_prompt]
         result = subprocess.run(
-            [executable, "--allow-all", "--model", model, "-p", safe_prompt],
+            _copilot_cmd,
             capture_output=True,
             text=True,
             encoding="utf-8",
+            errors="replace",
             timeout=120,
             cwd=PROJECT_ROOT,
             env=env,
         )
-        logger.debug(f"[_call_ai_sync] copilot result: RC={result.returncode}, stdout_len={len(result.stdout) if result.stdout else 0}, stderr_snippet={result.stderr[:200]!r}")
+        logger.debug(f"[_call_ai_sync] copilot result: RC={result.returncode}, stdout_len={len(result.stdout) if result.stdout else 0}, stderr_snippet={(result.stderr or '')[:200]!r}")
         output = _strip_ansi_text(result.stdout)
+        # Copilot CLI does not expose machine-readable usage in -p mode (NR028 §2.3).
+        # context_usage retains the server-side estimate only.
 
     elif runner == "claude":
         executable = shutil.which("claude") or "claude"
@@ -1345,7 +1414,21 @@ def _call_ai_sync(
             cwd=PROJECT_ROOT,
             env=env,
         )
-        output = _strip_ansi_text(result.stdout)
+        try:
+            payload = json.loads(result.stdout)
+            output = payload.get("result") or payload.get("text") or ""
+            actual_usage = payload.get("usage") or {}
+            total_cost_usd = payload.get("total_cost_usd")
+            if actual_usage:
+                context_usage["actual_input_tokens"] = actual_usage.get("input_tokens")
+                context_usage["actual_output_tokens"] = actual_usage.get("output_tokens")
+                context_usage["total_cost_usd"] = total_cost_usd
+        except (json.JSONDecodeError, Exception):
+            # Fallback: treat stdout as plain text if JSON parsing fails.
+            logger.warning(
+                f"[_call_ai_sync] claude JSON parse failed, falling back to plain text runner={runner!r}"
+            )
+            output = _strip_ansi_text(result.stdout)
 
     elif runner == "gemini":
         executable = shutil.which("gemini") or "gemini"
@@ -1360,6 +1443,8 @@ def _call_ai_sync(
             env=env,
         )
         output = _strip_ansi_text(result.stdout)
+        # Gemini CLI usage extraction: kept as estimate-only (NR028 §2.4 / T080 §6).
+        # --output-format json is not added because CLI version compatibility is unclear.
 
     elif runner == "codex":
         executable = shutil.which("codex") or "codex"
@@ -1370,10 +1455,14 @@ def _call_ai_sync(
             if not _trimmed:
                 continue
             _codex_cmd.extend(["--add-dir", _trimmed])
+        # Phase 2: --json produces JSONL; turn.completed.usage holds token counts (NR027/NR028).
+        # NOTE(Q080): exact item.* event schema for text extraction is pending confirmation.
+        # Current implementation uses the most probable structure observed in NR027/NR028.
         _codex_cmd.extend([
             "--ask-for-approval", "never",
             "--sandbox", "workspace-write",
             "exec",
+            "--json",
             "--model", model,
             "-",
         ])
@@ -1387,7 +1476,42 @@ def _call_ai_sync(
             cwd=PROJECT_ROOT,
             env=env,
         )
-        output = _strip_ansi_text(result.stdout)
+        codex_usage: Optional[dict] = None
+        answer_parts: List[str] = []
+        for _line in result.stdout.splitlines():
+            if not _line.strip():
+                continue
+            try:
+                _event = json.loads(_line)
+            except json.JSONDecodeError:
+                continue
+            _etype = _event.get("type", "")
+            if _etype == "turn.completed":
+                codex_usage = _event.get("usage")
+            # Text extraction from item events (best-effort, NR027 schema).
+            _item = _event.get("item") or _event.get("message") or {}
+            if isinstance(_item, dict) and _item.get("role") == "assistant":
+                _content = _item.get("content") or []
+                if isinstance(_content, list):
+                    for _block in _content:
+                        if isinstance(_block, dict):
+                            _txt = _block.get("text") or _block.get("output_text")
+                            if _txt:
+                                answer_parts.append(str(_txt))
+                elif isinstance(_content, str):
+                    answer_parts.append(_content)
+        output = "".join(answer_parts).strip()
+        if not output:
+            # Fallback: if JSONL text extraction yields nothing, use stripped stdout.
+            # This handles cases where the item.* schema differs from expected.
+            output = _strip_ansi_text(result.stdout)
+            logger.warning(
+                f"[_call_ai_sync] codex JSONL text extraction yielded nothing, "
+                f"using stripped stdout fallback runner={runner!r}"
+            )
+        if codex_usage:
+            context_usage["actual_input_tokens"] = codex_usage.get("input_tokens")
+            context_usage["actual_output_tokens"] = codex_usage.get("output_tokens")
 
     else:
         raise HTTPException(
@@ -1429,135 +1553,10 @@ def _call_ai_sync(
             detail={"code": "AI_EMPTY_RESPONSE", "runner": runner, "model": model},
         )
 
-    return output
+    return output, context_usage
 
 
 def send_message_sync(room_id: str, payload: dict) -> tuple[dict, List[dict]]:
-    """
-    T012: message.send — public message + single agent synchronous response.
-
-    Flow:
-      1. Save user message to DB
-      2. Get active agent participants (single agent only)
-      3. Call T011 routing (select_model) to determine model
-      4. Build conversation history for context
-      5. Call AI synchronously (_call_ai_sync)
-      6. Save AI response message to DB
-      7. Return (user_message, task_info_list) in P001 format
-
-    Restrictions (T012 scope): public messages only; whisper, compression,
-    one_shot context modes, and Worker Loop are not used here.
-    """
-    logger.debug(f"[send_message_sync] enter — room_id={room_id!r} delivery_mode={payload.get('delivery_mode')!r}")
-    from modules.routing import select_model
-
-    # ── Phase 1: save user message and prepare routing (inside transaction) ──
-    with STORE.transaction():
-        get_room(room_id)
-
-        created_at = now_iso()
-        sender = payload["sender"]
-        user_message = STORE.insert_message(
-            {
-                "message_id": STORE.next_id("msg"),
-                "room_id": room_id,
-                "sender_type": sender["sender_type"],
-                "sender_user_id": sender.get("user_id"),
-                "sender_agent_id": sender.get("agent_id"),
-                "visibility": "room",
-                "content_type": payload["content"]["content_type"],
-                "text": payload["content"]["text"],
-                "delivery_mode": payload["delivery_mode"],
-                "history_state": "active",
-                "replaced_by_message_id": None,
-                "source_task_id": None,
-                "token_estimate": None,
-                "created_at": created_at,
-            }
-        )
-
-        active_agents = [
-            p
-            for p in _room_participants(room_id, active_only=True)
-            if p["participant_type"] == "agent"
-        ]
-
-        if not active_agents:
-            return user_message, []
-
-        # Single agent response (T012 scope)
-        target_participant = active_agents[0]
-        agent = STORE.get_agent(target_participant["agent_id"])
-        if not agent:
-            return user_message, []
-
-        routing_decision = select_model(
-            {
-                "request_id": STORE.next_id("req"),
-                "source": "agent_chat",
-                "room_id": room_id,
-                "message_id": user_message["message_id"],
-                "agent_id": agent["agent_id"],
-                "task_intent": "agent_response",
-                "risk_hint": "low",
-                "preferred_runner": agent.get("default_runner") or "copilot",
-                "default_model": agent.get("default_model"),
-                "default_grade": agent.get("default_grade"),
-                "allowed_grade_min": "0급",
-                "allowed_grade_max": "1급",
-                "title": f"Chat response for {user_message['message_id']}",
-                "instruction": payload["content"]["text"],
-                "read_paths_count": 0,
-                "write_paths_count": 0,
-                "can_modify_code": False,
-                "can_modify_index": False,
-                "requires_review": False,
-            }
-        )
-
-    # ── Phase 2: build history and call AI (outside transaction) ──
-    history = _build_chat_history(room_id, user_message["message_id"])
-
-    agent_settings = _json_load(agent.get("settings_json"), {})
-    provider_token_id = agent_settings.get("provider_token_id")
-    work_dir = agent_settings.get("work_dir") or None
-    allowed_dirs = agent_settings.get("allowed_dirs") or []
-
-    ai_text = _call_ai_sync(
-        runner=routing_decision["selected_runner"],
-        model=routing_decision["selected_model"],
-        system_prompt=agent.get("system_prompt"),
-        history=history,
-        user_text=payload["content"]["text"],
-        pinned_context=agent.get("pinned_context"),
-        provider_token_id=provider_token_id,
-        work_dir=work_dir,
-        allowed_dirs=allowed_dirs,
-    )
-
-    # ── Phase 3: save AI response (inside transaction) ──
-    with STORE.transaction():
-        response_at = now_iso()
-        agent_message = STORE.insert_message(
-            {
-                "message_id": STORE.next_id("msg"),
-                "room_id": room_id,
-                "sender_type": "agent",
-                "sender_user_id": None,
-                "sender_agent_id": agent["agent_id"],
-                "visibility": "room",
-                "content_type": "text",
-                "text": ai_text,
-                "delivery_mode": payload["delivery_mode"],
-                "history_state": "active",
-                "replaced_by_message_id": None,
-                "source_task_id": None,
-                "token_estimate": None,
-                "created_at": response_at,
-            }
-        )
-
-    # The sync path does not create real worker tasks, so created_tasks always returns an empty list.
-    # Returning routing_id (route_*) as task_id would cause the client to repeatedly poll /worker/tasks/route_*.
-    task_info: List[dict] = []
-    return user_message, task_info
+    """T075: delegates to send_message() so single-agent chat uses the async agent_response task path."""
+    logger.debug(f"[send_message_sync] delegating to send_message — room_id={room_id!r}")
+    return send_message(room_id, payload)
