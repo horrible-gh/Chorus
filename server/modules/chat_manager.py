@@ -6,6 +6,7 @@ import platform
 import re
 import shutil
 import subprocess
+import queue
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -1349,6 +1350,312 @@ def _build_subprocess_env(runner: str, provider_token_id: Optional[str] = None) 
         )
     env[env_key] = token["token_value"]
     return env
+
+
+STREAMING_MAX_AGENTS: int = 4
+
+
+def _build_ai_prompt(
+    runner: str,
+    system_prompt: Optional[str],
+    history: List[dict],
+    user_text: str,
+    pinned_context: Optional[str] = None,
+) -> str:
+    """Build the full prompt string for AI CLI runners."""
+    parts: List[str] = []
+    if system_prompt:
+        parts.append(system_prompt)
+    if pinned_context and pinned_context.strip():
+        parts.append(f"Pinned context:\n\n{pinned_context}")
+    for msg in history:
+        prefix = "AI" if msg["role"] == "assistant" else "User"
+        parts.append(f"{prefix}: {msg['content']}")
+    parts.append(f"User: {user_text}")
+    return "\n\n".join(parts)
+
+
+def _call_ai_streaming(
+    runner: str,
+    model: str,
+    system_prompt: Optional[str],
+    history: List[dict],
+    user_text: str,
+    on_chunk: "Optional[callable]" = None,
+    cancel_check: "Optional[callable]" = None,
+    pinned_context: Optional[str] = None,
+    provider_token_id: Optional[str] = None,
+    work_dir: Optional[str] = None,
+    allowed_dirs: Optional[List[str]] = None,
+) -> "tuple[str, Optional[dict]]":
+    """
+    Call AI CLI using subprocess.Popen, streaming stdout line-by-line.
+
+    Each non-empty line read from stdout is passed to on_chunk(line).
+    Returns the same (response_text, context_usage) tuple as _call_ai_sync().
+    Falls back to treating the complete stdout as text for non-plaintext runners.
+    """
+    from modules.context_meter import compute_context_usage
+
+    prompt = _build_ai_prompt(runner, system_prompt, history, user_text, pinned_context)
+    context_usage = compute_context_usage(prompt, runner, model)
+    logger.debug(
+        f"[_call_ai_streaming] context_usage estimate runner={runner!r} model={model!r} "
+        f"ratio={context_usage['context_ratio']} status={context_usage['context_status']!r}"
+    )
+
+    env = _build_subprocess_env(runner, provider_token_id)
+
+    # --- TEMPORARY: copilot uses sync fallback until streaming loop is fixed ---
+    if runner == "copilot":
+        output, context_usage = _call_ai_sync(
+            runner, model, system_prompt, history, user_text,
+            pinned_context, provider_token_id, work_dir, allowed_dirs
+        )
+        if output and on_chunk:
+            try:
+                on_chunk(output)
+            except Exception as _cb_exc:
+                logger.warning("[_call_ai_streaming] copilot sync fallback on_chunk error: %s", _cb_exc)
+        return output, context_usage
+
+    elif runner == "claude":
+        executable = shutil.which("claude") or "claude"
+        proc = subprocess.Popen(
+            [executable, "--dangerously-skip-permissions", "--model", model, "-p", "-"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            cwd=PROJECT_ROOT,
+            env=env,
+        )
+        stdout_lines = []
+        proc.stdin.write(prompt)
+        proc.stdin.close()
+        _line_count = 0
+        _was_killed = False
+        for line in proc.stdout:
+            stdout_lines.append(line)
+            _line_count += 1
+            if cancel_check and _line_count % 5 == 0 and cancel_check():
+                proc.kill()
+                _was_killed = True
+                logger.info("[_call_ai_streaming] claude: cancel requested, subprocess killed")
+                break
+            if line.strip() and on_chunk:
+                try:
+                    on_chunk(line.rstrip("\n"))
+                except Exception as _cb_exc:
+                    logger.warning(f"[_call_ai_streaming] on_chunk error: {_cb_exc}")
+        if _was_killed:
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        else:
+            try:
+                proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                logger.warning("[_call_ai_streaming] claude: proc.wait timed out on normal exit, continuing")
+        stderr_text = proc.stderr.read() if proc.stderr else ""
+        result_stdout = "".join(stdout_lines)
+        result_returncode = proc.returncode
+        result_stderr = stderr_text
+        try:
+            payload = json.loads(result_stdout)
+            output = payload.get("result") or payload.get("text") or ""
+            actual_usage = payload.get("usage") or {}
+            total_cost_usd = payload.get("total_cost_usd")
+            if actual_usage:
+                context_usage["actual_input_tokens"] = actual_usage.get("input_tokens")
+                context_usage["actual_output_tokens"] = actual_usage.get("output_tokens")
+                context_usage["total_cost_usd"] = total_cost_usd
+        except (json.JSONDecodeError, Exception):
+            logger.warning(f"[_call_ai_streaming] claude JSON parse failed, using plain text runner={runner!r}")
+            output = _strip_ansi_text(result_stdout)
+
+    elif runner == "gemini":
+        executable = shutil.which("gemini") or "gemini"
+        proc = subprocess.Popen(
+            [executable, "--model", model, "-p", "-"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            cwd=PROJECT_ROOT,
+            env=env,
+        )
+        stdout_lines = []
+        proc.stdin.write(prompt)
+        proc.stdin.close()
+        _line_count = 0
+        _was_killed = False
+        for line in proc.stdout:
+            stdout_lines.append(line)
+            _line_count += 1
+            if cancel_check and _line_count % 5 == 0 and cancel_check():
+                proc.kill()
+                _was_killed = True
+                logger.info("[_call_ai_streaming] gemini: cancel requested, subprocess killed")
+                break
+            stripped = _strip_ansi_text(line)
+            if stripped and on_chunk:
+                try:
+                    on_chunk(stripped)
+                except Exception as _cb_exc:
+                    logger.warning(f"[_call_ai_streaming] on_chunk error: {_cb_exc}")
+        if _was_killed:
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        else:
+            try:
+                proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                logger.warning("[_call_ai_streaming] gemini: proc.wait timed out on normal exit, continuing")
+        stderr_text = proc.stderr.read() if proc.stderr else ""
+        result_stdout = "".join(stdout_lines)
+        result_returncode = proc.returncode
+        result_stderr = stderr_text
+        output = _strip_ansi_text(result_stdout)
+
+    elif runner == "codex":
+        executable = shutil.which("codex") or "codex"
+        _codex_work_dir = work_dir if work_dir else str(PROJECT_ROOT)
+        cmd = [executable, "-C", _codex_work_dir]
+        for _dir_path in (allowed_dirs or []):
+            _trimmed = _dir_path.strip()
+            if not _trimmed:
+                continue
+            cmd.extend(["--add-dir", _trimmed])
+        cmd.extend([
+            "--ask-for-approval", "never",
+            "--sandbox", "workspace-write",
+            "exec",
+            "--json",
+            "--model", model,
+            "-",
+        ])
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            cwd=PROJECT_ROOT,
+            env=env,
+        )
+        stdout_lines = []
+        proc.stdin.write(prompt)
+        proc.stdin.close()
+        codex_usage: Optional[dict] = None
+        answer_parts: List[str] = []
+        _line_count = 0
+        _was_killed = False
+        for line in proc.stdout:
+            stdout_lines.append(line)
+            _line_count += 1
+            if cancel_check and _line_count % 5 == 0 and cancel_check():
+                proc.kill()
+                _was_killed = True
+                logger.info("[_call_ai_streaming] codex: cancel requested, subprocess killed")
+                break
+            if not line.strip():
+                continue
+            try:
+                _event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            _etype = _event.get("type", "")
+            if _etype == "turn.completed":
+                codex_usage = _event.get("usage")
+            _item = _event.get("item") or _event.get("message") or {}
+            if isinstance(_item, dict) and _item.get("role") == "assistant":
+                _content = _item.get("content") or []
+                chunk_text = ""
+                if isinstance(_content, list):
+                    for _block in _content:
+                        if isinstance(_block, dict):
+                            _txt = _block.get("text") or _block.get("output_text")
+                            if _txt:
+                                answer_parts.append(str(_txt))
+                                chunk_text += str(_txt)
+                elif isinstance(_content, str):
+                    answer_parts.append(_content)
+                    chunk_text = _content
+                if chunk_text and on_chunk:
+                    try:
+                        on_chunk(chunk_text)
+                    except Exception as _cb_exc:
+                        logger.warning(f"[_call_ai_streaming] on_chunk error: {_cb_exc}")
+        if _was_killed:
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        else:
+            try:
+                proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                logger.warning("[_call_ai_streaming] codex: proc.wait timed out on normal exit, continuing")
+        stderr_text = proc.stderr.read() if proc.stderr else ""
+        result_stdout = "".join(stdout_lines)
+        result_returncode = proc.returncode
+        result_stderr = stderr_text
+        output = "".join(answer_parts).strip()
+        if not output:
+            output = _strip_ansi_text(result_stdout)
+            logger.warning(
+                f"[_call_ai_streaming] codex JSONL text extraction yielded nothing, "
+                f"using stripped stdout fallback runner={runner!r}"
+            )
+        if codex_usage:
+            context_usage["actual_input_tokens"] = codex_usage.get("input_tokens")
+            context_usage["actual_output_tokens"] = codex_usage.get("output_tokens")
+
+    else:
+        raise HTTPException(
+            status_code=501,
+            detail={"code": "RUNNER_NOT_SUPPORTED", "runner": runner},
+        )
+
+    if result_returncode != 0:
+        _stderr_lower = (result_stderr or "").lower()
+        if any(kw in _stderr_lower for kw in ("unknown model", "model not found", "invalid model specification")):
+            _error_category = "model_error"
+        elif any(kw in _stderr_lower for kw in ("authentication failed", "invalid api key", "401 unauthorized")):
+            _error_category = "auth_error"
+        elif any(kw in _stderr_lower for kw in ("insufficient credits", "rate limit exceeded", "429 too many requests", "quota exceeded")):
+            _error_category = "credit_error"
+        else:
+            _error_category = "unknown"
+        failure_detail = {
+            "code": "AI_SUBPROCESS_FAILED",
+            "runner": runner,
+            "model": model,
+            "returncode": result_returncode,
+            "stderr_excerpt": _subprocess_output_excerpt(result_stderr),
+            "stdout_excerpt": _subprocess_output_excerpt(result_stdout),
+            "error_category": _error_category,
+        }
+        logger.error(
+            f"[_call_ai_streaming] subprocess failed runner={runner!r} model={model!r} "
+            f"returncode={result_returncode} detail={failure_detail!r}"
+        )
+        raise HTTPException(status_code=502, detail=failure_detail)
+
+    if not output:
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "AI_EMPTY_RESPONSE", "runner": runner, "model": model},
+        )
+
+    return output, context_usage
 
 
 def _call_ai_sync(

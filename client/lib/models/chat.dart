@@ -101,6 +101,14 @@ class ContextUsage {
 
   bool get hasActual => actualInputTokens != null;
 
+  /// Compute display ratio: prefer actual tokens from API when available, fall back to estimate
+  double get displayRatio {
+    if (actualInputTokens != null && contextWindow > 0) {
+      return actualInputTokens! / contextWindow;
+    }
+    return contextRatio;
+  }
+
   factory ContextUsage.fromJson(Map<String, dynamic> json) {
     return ContextUsage(
       estimatedInputTokens: (json['estimated_input_tokens'] as num?)?.toInt() ?? 0,
@@ -131,6 +139,7 @@ class ChatMessage {
     this.senderAgentId,
     this.sourceTaskId,
     this.contextUsage,
+    this.isStreaming = false,
   });
 
   final String messageId;
@@ -148,11 +157,34 @@ class ChatMessage {
   final ContextUsage? contextUsage;
   final String createdAt;
   final bool isCancelled;
+  /// True while this is a temporary in-progress streaming message (not yet persisted in DB).
+  final bool isStreaming;
 
   bool get isFromUser => senderType == 'user';
   bool get isFromAgent => senderType == 'agent';
   bool get isWhisper => visibility == 'whisper';
   bool get isOneShot => deliveryMode == 'one_shot';
+
+  ChatMessage copyWith({String? text, bool? isStreaming}) {
+    return ChatMessage(
+      messageId: messageId,
+      roomId: roomId,
+      senderType: senderType,
+      senderUserId: senderUserId,
+      senderAgentId: senderAgentId,
+      visibility: visibility,
+      recipientAgentIds: recipientAgentIds,
+      contentType: contentType,
+      text: text ?? this.text,
+      deliveryMode: deliveryMode,
+      historyState: historyState,
+      sourceTaskId: sourceTaskId,
+      createdAt: createdAt,
+      isCancelled: isCancelled,
+      contextUsage: contextUsage,
+      isStreaming: isStreaming ?? this.isStreaming,
+    );
+  }
 
   factory ChatMessage.fromJson(Map<String, dynamic> json) {
     final rawRecipients = json['recipient_agent_ids'];

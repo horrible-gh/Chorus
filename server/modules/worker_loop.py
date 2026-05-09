@@ -19,6 +19,25 @@ POLL_INTERVAL_SECONDS = 3
 _POLL_WORKER_ID = "server-poll-worker"
 
 
+def _publish_message_delta(task_id: str, room_id: str, delta: str) -> None:
+    """Publishes a message_delta event during streaming AI generation."""
+    from modules.push_manager import push_manager
+    payload = {
+        "type": "message_delta",
+        "task_id": task_id,
+        "room_id": room_id,
+        "delta": delta,
+        "timestamp": now_iso(),
+    }
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(push_manager.publish(room_id, payload))
+    except RuntimeError:
+        logger.warning(
+            f"[_publish_message_delta] no running event loop for task {task_id!r}"
+        )
+
+
 def _publish_message_completed(task_id: str, task: dict) -> None:
     """Publishes the message_completed event after AI task completion and message storage."""
     room_id = task.get("input_json", {}).get("room_id")
@@ -312,11 +331,10 @@ def complete_task(task_id: str, payload: dict) -> tuple[dict, dict]:
             try:
                 msg = persist_agent_response_message(task, result_json)
                 if msg is None:
-                    logger.error(f"[complete_task] persist_agent_response_message returned None for task {task_id}")
-                else:
-                    _publish_message_completed(task_id, task)
+                    logger.error(f"[complete_task] persist_agent_response_message returned None for task {task_id!r}; publishing message_completed anyway")
             except Exception as e:
                 logger.error(f"[complete_task] persist_agent_response_message raised an exception for task {task_id}: {e}")
+            _publish_message_completed(task_id, task)
         
         return task, run
 
@@ -372,7 +390,12 @@ def fail_task(task_id: str, payload: dict) -> tuple[dict, dict]:
 
 async def _dispatch_one_task(task: dict) -> None:
     """Processes one runnable agent_response task."""
-    from modules.chat_manager import _call_ai_sync, _build_chat_history
+    from modules.chat_manager import (
+        STREAMING_MAX_AGENTS,
+        _call_ai_streaming,
+        _call_ai_sync,
+        _build_chat_history,
+    )
 
     task_id = task["task_id"]
     logger.debug(f"[poll_loop] task dispatch start — task_id={task_id!r}")
@@ -418,20 +441,78 @@ async def _dispatch_one_task(task: dict) -> None:
             STORE.update_lease(lease_id, {"status": "released", "released_at": now_iso()})
         return
 
-    logger.debug(f"[poll_loop] AI call start — task_id={task_id!r} runner={runner!r} model={model!r}")
-    try:
-        ai_text, context_usage = await asyncio.to_thread(
-            _call_ai_sync,
-            runner=runner,
-            model=model,
-            system_prompt=agent.get("system_prompt") if agent else None,
-            history=history,
-            user_text=instruction,
-            pinned_context=agent.get("pinned_context") if agent else None,
-            provider_token_id=provider_token_id,
-            work_dir=work_dir,
-            allowed_dirs=allowed_dirs,
+    # Determine if this room qualifies for streaming.
+    active_agent_count = 0
+    if room_id:
+        participants = STORE.list_participants(room_id, active_only=True)
+        active_agent_count = sum(
+            1 for p in participants if p.get("participant_type") == "agent"
         )
+    use_streaming = room_id is not None and active_agent_count <= STREAMING_MAX_AGENTS
+
+    logger.debug(
+        f"[poll_loop] AI call start — task_id={task_id!r} runner={runner!r} model={model!r} "
+        f"streaming={use_streaming} active_agents={active_agent_count}"
+    )
+    try:
+        if use_streaming:
+            loop = asyncio.get_running_loop()
+            from modules.push_manager import push_manager
+
+            def _on_chunk(chunk: str) -> None:
+                payload = {
+                    "type": "message_delta",
+                    "task_id": task_id,
+                    "room_id": room_id,
+                    "delta": chunk,
+                    "agent_id": agent_id,
+                    "timestamp": now_iso(),
+                }
+                asyncio.run_coroutine_threadsafe(
+                    push_manager.publish(room_id, payload), loop
+                )
+
+            def _is_cancelled() -> bool:
+                t = STORE.get_task(task_id)
+                return t is not None and t.get("status") == "cancelled"
+
+            ai_text, context_usage = await asyncio.to_thread(
+                _call_ai_streaming,
+                runner=runner,
+                model=model,
+                system_prompt=agent.get("system_prompt") if agent else None,
+                history=history,
+                user_text=instruction,
+                on_chunk=_on_chunk,
+                pinned_context=agent.get("pinned_context") if agent else None,
+                provider_token_id=provider_token_id,
+                work_dir=work_dir,
+                allowed_dirs=allowed_dirs,
+                cancel_check=_is_cancelled,
+            )
+            # Re-check: task may have been cancelled during streaming
+            _fresh_task = STORE.get_task(task_id)
+            if _fresh_task and _fresh_task.get("status") == "cancelled":
+                logger.info(
+                    f"[poll_loop] task {task_id!r} cancelled during streaming; "
+                    f"skipping complete_task and releasing lease"
+                )
+                with STORE.transaction():
+                    STORE.update_lease(lease_id, {"status": "released", "released_at": now_iso()})
+                return
+        else:
+            ai_text, context_usage = await asyncio.to_thread(
+                _call_ai_sync,
+                runner=runner,
+                model=model,
+                system_prompt=agent.get("system_prompt") if agent else None,
+                history=history,
+                user_text=instruction,
+                pinned_context=agent.get("pinned_context") if agent else None,
+                provider_token_id=provider_token_id,
+                work_dir=work_dir,
+                allowed_dirs=allowed_dirs,
+            )
         logger.debug(f"[poll_loop] AI call succeeded — task_id={task_id!r}")
         try:
             from routers.auth.provider_management import mark_provider_available

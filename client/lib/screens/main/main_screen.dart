@@ -754,7 +754,7 @@ class _ChatPaneState extends State<_ChatPane> {
     }
     if (message.isFromAgent) {
       for (final participant in chat.participants) {
-        if (participant.agentId == message.senderAgentId) {
+        if (participant.isAgent && participant.agentId == message.senderAgentId) {
           return participant.displayName;
         }
       }
@@ -1206,12 +1206,15 @@ class _MessageBubble extends StatelessWidget {
                     ],
                   ),
                   const SizedBox(height: 6),
-                  SelectableText(
-                    message.text,
-                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: textColor,
-                        ),
-                  ),
+                  if (message.isStreaming)
+                    _StreamingText(text: message.text, textColor: textColor)
+                  else
+                    SelectableText(
+                      message.text,
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: textColor,
+                          ),
+                    ),
                   if (message.isFromAgent && message.contextUsage != null)
                     _ContextMeterBar(
                       contextUsage: message.contextUsage!,
@@ -1265,6 +1268,53 @@ class _MessageBubble extends StatelessWidget {
   }
 }
 
+/// Displays text with an animated blinking cursor to indicate active streaming.
+class _StreamingText extends StatefulWidget {
+  const _StreamingText({required this.text, required this.textColor});
+
+  final String text;
+  final Color textColor;
+
+  @override
+  State<_StreamingText> createState() => _StreamingTextState();
+}
+
+class _StreamingTextState extends State<_StreamingText>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 600),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final showCursor = _controller.value > 0.5;
+        return Text(
+          '${widget.text}${showCursor ? '▍' : ''}',
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: widget.textColor,
+              ),
+        );
+      },
+    );
+  }
+}
+
 class _ContextMeterBar extends StatelessWidget {
   const _ContextMeterBar({
     required this.contextUsage,
@@ -1275,7 +1325,7 @@ class _ContextMeterBar extends StatelessWidget {
   final Color textColor;
 
   Color _barColor() {
-    final r = contextUsage.contextRatio;
+    final r = contextUsage.displayRatio;
     if (r >= 0.95) return Colors.red;
     if (r >= 0.80) return Colors.orange;
     if (r >= 0.60) return Colors.amber;
@@ -1283,7 +1333,7 @@ class _ContextMeterBar extends StatelessWidget {
   }
 
   String _label() {
-    final pct = (contextUsage.contextRatio * 100).round();
+    final pct = (contextUsage.displayRatio * 100).round();
     return contextUsage.hasActual ? '$pct%' : '~$pct% est.';
   }
 
@@ -1298,7 +1348,7 @@ class _ContextMeterBar extends StatelessWidget {
           ClipRRect(
             borderRadius: BorderRadius.circular(2),
             child: LinearProgressIndicator(
-              value: contextUsage.contextRatio.clamp(0.0, 1.0),
+              value: contextUsage.displayRatio.clamp(0.0, 1.0),
               minHeight: 3,
               backgroundColor: textColor.withValues(alpha: 0.15),
               valueColor: AlwaysStoppedAnimation<Color>(_barColor()),

@@ -31,6 +31,9 @@ class ChatProvider extends ChangeNotifier {
     _pushService.onMessageCompleted = (roomId) {
       unawaited(_onPushMessageCompleted(roomId));
     };
+    _pushService.onMessageDelta = (taskId, roomId, delta, agentId) {
+      _onPushMessageDelta(taskId, roomId, delta, agentId);
+    };
   }
 
   final ChatService _service;
@@ -55,6 +58,8 @@ class ChatProvider extends ChangeNotifier {
   String? _generationId;
   String? _generationTaskId;
   bool _cancelDebounceActive = false;
+  /// Accumulates streaming delta text per task_id while message_delta events arrive.
+  final Map<String, String> _streamingMessages = {};
 
   List<ChatRoom> get rooms => _rooms;
   List<AgentPreset> get agents => _agents;
@@ -135,6 +140,7 @@ class ChatProvider extends ChangeNotifier {
       _generationState = GenerationState.idle;
       _generationId = null;
       _generationTaskId = null;
+      _streamingMessages.clear();
     }
     _selectedRoomId = roomId;
     _lastUserId = userId;
@@ -302,7 +308,7 @@ class ChatProvider extends ChangeNotifier {
           cancelledIds = await _cancelledPendingTaskIds(stillPending);
         }
 
-        _messages = messages;
+        _messages = _mergeWithStreaming(messages);
 
         final allCompletedIds = {...successIds, ...failedIds, ...cancelledIds};
         _pendingTasksCompleted =
@@ -330,6 +336,7 @@ class ChatProvider extends ChangeNotifier {
           if (rId != null) unawaited(_clearGenerationState(rId));
           _generationId = null;
           _generationTaskId = null;
+          _streamingMessages.clear();
         }
 
         notifyListeners();
@@ -353,6 +360,7 @@ class ChatProvider extends ChangeNotifier {
       if (rId != null) unawaited(_clearGenerationState(rId));
       _generationId = null;
       _generationTaskId = null;
+      _streamingMessages.clear();
       notifyListeners();
     }
   }
@@ -371,7 +379,7 @@ class ChatProvider extends ChangeNotifier {
         roomId: roomId,
         viewerUserId: userId,
       );
-      _messages = messages;
+      _messages = _mergeWithStreaming(messages);
       notifyListeners();
     } catch (error, stackTrace) {
       debugPrint('[ChatProvider._fetchMessagesOnce] $error');
@@ -805,8 +813,69 @@ class ChatProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> _onPushMessageCompleted(String roomId) async {
+  void _onPushMessageDelta(String taskId, String roomId, String delta, String? agentId) {
     if (roomId != _selectedRoomId) return;
+    if (_generationState == GenerationState.cancelRequested ||
+        _generationState == GenerationState.cancelled) {
+      return;
+    }
+    _streamingMessages[taskId] = (_streamingMessages[taskId] ?? '') + delta;
+
+    // Find and update an existing streaming bubble, or insert a new one.
+    final idx = _messages.indexWhere(
+      (m) => m.isStreaming && m.sourceTaskId == taskId,
+    );
+    final updatedText = _streamingMessages[taskId]!;
+    if (idx >= 0) {
+      final updated = _messages[idx].copyWith(text: updatedText);
+      _messages = [
+        ..._messages.sublist(0, idx),
+        updated,
+        ..._messages.sublist(idx + 1),
+      ];
+    } else {
+      final tempMsg = ChatMessage(
+        messageId: 'streaming_$taskId',
+        roomId: roomId,
+        senderType: 'agent',
+        senderAgentId: agentId,
+        visibility: 'normal',
+        recipientAgentIds: const [],
+        contentType: 'text',
+        text: updatedText,
+        deliveryMode: 'append_history',
+        historyState: 'include',
+        createdAt: DateTime.now().toIso8601String(),
+        isCancelled: false,
+        sourceTaskId: taskId,
+        isStreaming: true,
+      );
+      _messages = [..._messages, tempMsg];
+    }
+    notifyListeners();
+  }
+
+  /// Merges server-fetched messages with any active streaming temp messages.
+  ///
+  /// Streaming temp messages for tasks not yet in the server list are appended.
+  List<ChatMessage> _mergeWithStreaming(List<ChatMessage> serverMessages) {
+    if (_streamingMessages.isEmpty) return serverMessages;
+    final serverTaskIds = serverMessages
+        .map((m) => m.sourceTaskId)
+        .whereType<String>()
+        .toSet();
+    final streamingToKeep = _messages.where(
+      (m) => m.isStreaming && !serverTaskIds.contains(m.sourceTaskId),
+    ).toList();
+    if (streamingToKeep.isEmpty) return serverMessages;
+    return [...serverMessages, ...streamingToKeep];
+  }
+
+  Future<void> _onPushMessageCompleted(String roomId) async {
+    if (roomId != _selectedRoomId) {
+      _pushService.notifyRefreshComplete();
+      return;
+    }
     final userId = _lastUserId;
     if (userId == null || userId.isEmpty) {
       _pushService.notifyRefreshComplete();
@@ -817,7 +886,13 @@ class ChatProvider extends ChangeNotifier {
         roomId: roomId,
         viewerUserId: userId,
       );
-      _messages = messages;
+      // Remove streaming entries that now have a persisted server message.
+      final serverTaskIds = messages
+          .map((m) => m.sourceTaskId)
+          .whereType<String>()
+          .toSet();
+      _streamingMessages.removeWhere((k, _) => serverTaskIds.contains(k));
+      _messages = _mergeWithStreaming(messages);
       _recalculatePending(messages);
       notifyListeners();
     } catch (error, stackTrace) {
@@ -832,6 +907,7 @@ class ChatProvider extends ChangeNotifier {
   void dispose() {
     _pushService.removeListener(_onPushStatusChanged);
     _pushService.onMessageCompleted = null;
+    _pushService.onMessageDelta = null;
     _pushService.dispose();
     super.dispose();
   }
