@@ -1406,18 +1406,145 @@ def _call_ai_streaming(
 
     env = _build_subprocess_env(runner, provider_token_id)
 
-    # --- TEMPORARY: copilot uses sync fallback until streaming loop is fixed ---
     if runner == "copilot":
-        output, context_usage = _call_ai_sync(
-            runner, model, system_prompt, history, user_text,
-            pinned_context, provider_token_id, work_dir, allowed_dirs
+        import json as _json
+
+        executable = _resolve_copilot_executable()
+        
+        # Handle Windows CMD/BAT files (similar to _call_ai_sync)
+        if executable.upper().endswith((".CMD", ".BAT")):
+            npm_basedir = os.path.dirname(executable)
+            npm_loader = os.path.join(npm_basedir, "node_modules", "@github", "copilot", "npm-loader.js")
+            node_exe = shutil.which("node")
+            if node_exe and os.path.exists(npm_loader):
+                _cmd = [node_exe, npm_loader, "--allow-all", "--model", model, "--output-format=json", "-p", prompt]
+            else:
+                _cmd = ["cmd", "/c", executable, "--allow-all", "--model", model, "--output-format=json", "-p", prompt]
+        else:
+            _cmd = [executable, "--allow-all", "--model", model, "--output-format=json", "-p", prompt]
+        proc = subprocess.Popen(
+            _cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            cwd=PROJECT_ROOT,
+            env=env,
         )
-        if output and on_chunk:
+
+        stdout_lines = []
+        _out_queue: "queue.Queue[Optional[str]]" = queue.Queue()
+
+        def _copilot_reader() -> None:
             try:
-                on_chunk(output)
-            except Exception as _cb_exc:
-                logger.warning("[_call_ai_streaming] copilot sync fallback on_chunk error: %s", _cb_exc)
-        return output, context_usage
+                for _ln in iter(proc.stdout.readline, ""):
+                    _out_queue.put(_ln)
+            finally:
+                _out_queue.put(None)  # EOF sentinel
+
+        _reader_thread = threading.Thread(target=_copilot_reader, daemon=True)
+        _reader_thread.start()
+
+        _exit_code: int = 0
+        _line_count = 0
+
+        while True:
+            try:
+                raw = _out_queue.get(timeout=120)
+            except queue.Empty:
+                logger.warning("[_call_ai_streaming] copilot: no output for 120s, killing")
+                proc.kill()
+                break
+
+            if raw is None:  # EOF — process exited
+                break
+
+            raw = raw.strip()
+            if not raw:
+                continue
+
+            _line_count += 1
+
+            # cancel check every 10 events
+            if cancel_check and _line_count % 10 == 0 and cancel_check():
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                logger.info("[_call_ai_streaming] copilot: cancel requested")
+                break
+
+            try:
+                event = _json.loads(raw)
+            except _json.JSONDecodeError:
+                # non-JSON line (e.g. ANSI, debug text) — pass as raw chunk
+                stripped = _strip_ansi_text(raw)
+                if stripped and on_chunk:
+                    try:
+                        on_chunk(stripped)
+                    except Exception as _e:
+                        logger.warning("[_call_ai_streaming] copilot on_chunk error: %s", _e)
+                continue
+
+            event_type = event.get("type", "")
+            data = event.get("data") or {}
+
+            if event_type == "assistant.message_delta":
+                delta = data.get("deltaContent", "")
+                if delta and on_chunk:
+                    try:
+                        on_chunk(delta)
+                    except Exception as _e:
+                        logger.warning("[_call_ai_streaming] copilot on_chunk error: %s", _e)
+                stdout_lines.append(delta)
+
+            elif event_type == "assistant.message":
+                # fallback: full message if no deltas arrived
+                if not stdout_lines:
+                    content = data.get("content", "")
+                    if content:
+                        stdout_lines.append(content)
+                        if on_chunk:
+                            try:
+                                on_chunk(content)
+                            except Exception as _e:
+                                logger.warning("[_call_ai_streaming] copilot on_chunk error: %s", _e)
+
+            elif event_type == "assistant.turn_end":
+                # explicit completion signal — exit loop
+                break
+
+            elif event_type == "result":
+                _exit_code = data.get("exitCode", event.get("exitCode", 0))
+                # result is the last event; loop will exit on next iteration (None sentinel)
+
+            elif event_type in ("abort", "exception", "error"):
+                logger.warning("[_call_ai_streaming] copilot event error: %s", event)
+                break
+
+            # skip: session.*, user.message, assistant.reasoning_delta,
+            #        assistant.reasoning, assistant.message_start, assistant.turn_start
+
+        # wait for process
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+
+        # drain stderr (safe — process has exited)
+        stderr_text = proc.stderr.read() if proc.stderr else ""
+        result_returncode = proc.returncode if proc.returncode is not None else _exit_code
+
+        result_stdout = "".join(stdout_lines)
+        context_usage = {}
+        return result_stdout, context_usage
 
     elif runner == "claude":
         executable = shutil.which("claude") or "claude"
