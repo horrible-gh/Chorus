@@ -10,9 +10,11 @@ class AuthLoginResponse {
     required this.accessToken,
     required this.tokenType,
     required this.user,
+    this.refreshToken = '',
   });
 
   final String accessToken;
+  final String refreshToken;
   final String tokenType;
   final User user;
 
@@ -26,8 +28,29 @@ class AuthLoginResponse {
 
     return AuthLoginResponse(
       accessToken: json['access_token'] as String? ?? '',
+      refreshToken: json['refresh_token'] as String? ?? '',
       tokenType: json['token_type'] as String? ?? 'bearer',
       user: User.fromJson(userJson),
+    );
+  }
+}
+
+class TokenRefreshResponse {
+  const TokenRefreshResponse({
+    required this.accessToken,
+    required this.refreshToken,
+    required this.tokenType,
+  });
+
+  final String accessToken;
+  final String refreshToken;
+  final String tokenType;
+
+  factory TokenRefreshResponse.fromJson(Map<String, dynamic> json) {
+    return TokenRefreshResponse(
+      accessToken: json['access_token'] as String? ?? '',
+      refreshToken: json['refresh_token'] as String? ?? '',
+      tokenType: json['token_type'] as String? ?? 'bearer',
     );
   }
 }
@@ -121,10 +144,30 @@ class AuthService {
     }
   }
 
-  Future<void> logout() async {
+  Future<void> logout({String? refreshToken}) async {
     try {
-      await _dio.post<void>('/logout');
+      await _dio.post<void>(
+        '/logout',
+        data: refreshToken != null ? {'refresh_token': refreshToken} : null,
+      );
     } on DioException catch (error) {
+      throw _toAuthException(error);
+    }
+  }
+
+  Future<TokenRefreshResponse> refreshAccessToken(String refreshToken) async {
+    try {
+      final response = await _dio.post<Map<String, dynamic>>(
+        '/login/token/refresh',
+        data: {'refresh_token': refreshToken},
+      );
+      return TokenRefreshResponse.fromJson(
+        response.data ?? const <String, dynamic>{},
+      );
+    } on DioException catch (error) {
+      debugPrint(
+        '[AuthService.refreshAccessToken] ${error.response?.statusCode}',
+      );
       throw _toAuthException(error);
     }
   }

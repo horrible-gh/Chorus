@@ -43,6 +43,9 @@ def verify_token(token: str = Depends(oauth2_scheme)):
         exp: int = payload.get("exp")
         totp_pending: bool = payload.get("totp_pending", False)
 
+        if payload.get("type") == "refresh":
+            raise HTTPException(status_code=401, detail="Invalid authentication credentials")
+
         if user_id is None or exp is None:
             raise credentials_exception
 

@@ -13,6 +13,7 @@ class AppConfig {
   static String get baseUrl => _trimTrailingSlash(_defaultBaseUrl);
 
   static const keyAccessToken = 'auth.access_token';
+  static const keyRefreshToken = 'auth.refresh_token';
   static const keyTokenType = 'auth.token_type';
   static const keyUser = 'auth.user';
   static const keyLastLoginAt = 'auth.last_login_at';

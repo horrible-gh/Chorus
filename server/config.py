@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     ALLOWED_ORIGIN: str
     SECRET_KEY: str
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     # REL-013: token_refresh threshold (in minutes). Auto-clamped when threshold >= token_lifetime.
     TOKEN_REFRESH_THRESHOLD_MINUTES: int = 1
     CONTEXT: str

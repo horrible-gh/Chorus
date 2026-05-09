@@ -27,6 +27,8 @@ class AuthProvider extends ChangeNotifier {
     _apiClient.configure(
       getAccessToken: () => _accessToken,
       onSessionExpired: handleSessionExpired,
+      getRefreshToken: () => _refreshToken,
+      onTokenRefreshed: _handleTokenRefreshed,
     );
   }
 
@@ -38,6 +40,7 @@ class AuthProvider extends ChangeNotifier {
   AuthStatus _status = AuthStatus.checking;
   User? _user;
   String? _accessToken;
+  String? _refreshToken;
   String? _tokenType;
   String? _tempToken;
   bool _isLoading = false;
@@ -67,6 +70,7 @@ class AuthProvider extends ChangeNotifier {
       final token = await _secureStorage.read(AppConfig.keyAccessToken);
       final tokenType = await _secureStorage.read(AppConfig.keyTokenType);
       final userJson = await _secureStorage.read(AppConfig.keyUser);
+      final refreshToken = await _secureStorage.read(AppConfig.keyRefreshToken);
 
       if (token == null || userJson == null || JwtUtil.isExpired(token)) {
         await _clearSession(setUnauthenticated: true);
@@ -80,6 +84,7 @@ class AuthProvider extends ChangeNotifier {
       }
 
       _accessToken = token;
+      _refreshToken = refreshToken;
       _tokenType = tokenType ?? 'bearer';
       _user = User.fromJson(decodedUser);
       _status = AuthStatus.authenticated;
@@ -166,7 +171,7 @@ class AuthProvider extends ChangeNotifier {
     _setLoading(true);
     try {
       if (_accessToken != null) {
-        await _authService.logout();
+        await _authService.logout(refreshToken: _refreshToken);
       }
     } catch (error) {
       debugPrint('[AuthProvider.logout] $error');
@@ -184,12 +189,13 @@ class AuthProvider extends ChangeNotifier {
 
   Future<void> _saveSession(AuthLoginResponse session) async {
     _accessToken = session.accessToken;
+    _refreshToken = session.refreshToken.isNotEmpty ? session.refreshToken : null;
     _tokenType = session.tokenType;
     _user = session.user;
     _status = AuthStatus.authenticated;
     _error = null;
 
-    await Future.wait([
+    final writes = [
       _secureStorage.write(AppConfig.keyAccessToken, session.accessToken),
       _secureStorage.write(AppConfig.keyTokenType, session.tokenType),
       _secureStorage.write(AppConfig.keyUser, jsonEncode(session.user.toJson())),
@@ -197,13 +203,20 @@ class AuthProvider extends ChangeNotifier {
         AppConfig.keyLastLoginAt,
         DateTime.now().toIso8601String(),
       ),
-    ]);
+    ];
+    if (session.refreshToken.isNotEmpty) {
+      writes.add(
+        _secureStorage.write(AppConfig.keyRefreshToken, session.refreshToken),
+      );
+    }
+    await Future.wait(writes);
 
     notifyListeners();
   }
 
   Future<void> _clearSession({required bool setUnauthenticated}) async {
     _accessToken = null;
+    _refreshToken = null;
     _tokenType = null;
     _user = null;
     _tempToken = null;
@@ -213,12 +226,25 @@ class AuthProvider extends ChangeNotifier {
 
     await Future.wait([
       _secureStorage.delete(AppConfig.keyAccessToken),
+      _secureStorage.delete(AppConfig.keyRefreshToken),
       _secureStorage.delete(AppConfig.keyTokenType),
       _secureStorage.delete(AppConfig.keyUser),
       _secureStorage.delete(AppConfig.keyLastLoginAt),
     ]);
 
     notifyListeners();
+  }
+
+  Future<void> _handleTokenRefreshed(
+    String accessToken,
+    String refreshToken,
+  ) async {
+    _accessToken = accessToken;
+    _refreshToken = refreshToken;
+    await Future.wait([
+      _secureStorage.write(AppConfig.keyAccessToken, accessToken),
+      _secureStorage.write(AppConfig.keyRefreshToken, refreshToken),
+    ]);
   }
 
   void _setLoading(bool value) {

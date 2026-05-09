@@ -3,6 +3,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr
 import jwt
+import redis as redis_lib
 from datetime import datetime, timedelta, timezone
 from config import settings, db, tfa
 from slowapi import Limiter
@@ -19,6 +20,7 @@ limiter = Limiter(key_func=get_remote_address)
 SECRET_KEY = settings.SECRET_KEY
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = settings.ACCESS_TOKEN_EXPIRE_MINUTES
+REFRESH_TOKEN_EXPIRE_DAYS = settings.REFRESH_TOKEN_EXPIRE_DAYS
 TOTP_PENDING_EXPIRE_MINUTES = 5
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
@@ -26,6 +28,13 @@ pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 router = APIRouter()
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token")
+
+redis_client = redis_lib.Redis(
+    host=settings.REDIS_HOST,
+    port=settings.REDIS_PORT,
+    db=settings.REDIS_DB,
+    decode_responses=True
+)
 
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
@@ -78,6 +87,10 @@ class TotpVerifyRequest(BaseModel):
     code: str
 
 
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
+
 @router.post("/")
 @router.post("")
 @limiter.limit(settings.RATE_LIMIT_LOGIN)
@@ -115,8 +128,17 @@ async def login(request: Request, body: LoginRequest):
         data={"sub": user_id},
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
     )
+    refresh_token = create_access_token(
+        data={"sub": user_id, "type": "refresh"},
+        expires_delta=timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS),
+    )
+    redis_client.setex(
+        f"refresh:{user_id}",
+        REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+        refresh_token,
+    )
     logger.debug({"access_token": access_token, "token_type": "bearer", "user": user})
-    return {"access_token": access_token, "token_type": "bearer", "user": user}
+    return {"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer", "user": user}
 
 
 @router.post("/totp/verify")
@@ -162,3 +184,86 @@ async def verify_totp_login(request: Request, body: TotpVerifyRequest):
     )
     logger.debug(f"[TOTP Verify] ✅ login succeeded - user_id: {user_id}")
     return {"access_token": access_token, "token_type": "bearer", "user": user}
+
+
+@router.post("/token/refresh")
+async def token_refresh(body: RefreshTokenRequest):
+    invalid_exc = HTTPException(
+        status_code=401,
+        detail="Invalid authentication credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    expired_exc = HTTPException(
+        status_code=401,
+        detail="Token has expired",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    received_token = body.refresh_token
+
+    # Step 2: Decode without verification to extract user_id
+    try:
+        unverified_payload = jwt.decode(
+            received_token,
+            options={"verify_signature": False},
+            algorithms=[ALGORITHM],
+        )
+        user_id = unverified_payload.get("sub")
+        if not user_id:
+            raise invalid_exc
+    except jwt.InvalidTokenError:
+        raise invalid_exc
+
+    # Step 3-4: Check Redis and compare stored token
+    stored_token = redis_client.get(f"refresh:{user_id}")
+    if stored_token is None:
+        raise invalid_exc
+    if stored_token != received_token:
+        raise invalid_exc
+
+    # Step 5: Verify JWT signature and expiry
+    try:
+        payload = jwt.decode(
+            received_token,
+            SECRET_KEY,
+            algorithms=[ALGORITHM],
+            options={"verify_exp": True},
+        )
+    except jwt.ExpiredSignatureError:
+        raise expired_exc
+    except jwt.InvalidTokenError:
+        raise invalid_exc
+
+    # Step 6: Check type == "refresh"
+    if payload.get("type") != "refresh":
+        raise invalid_exc
+
+    # Step 7: Create new access_token
+    new_access_token = create_access_token(
+        data={"sub": user_id},
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+    )
+
+    # Steps 8-10: Rotate refresh_token with inherited exp
+    original_exp: int = payload["exp"]
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    remaining_ttl = original_exp - now_ts
+    if remaining_ttl <= 0:
+        raise expired_exc
+
+    original_exp_dt = datetime.fromtimestamp(original_exp, tz=timezone.utc)
+    remaining_delta = original_exp_dt - datetime.now(timezone.utc)
+
+    redis_client.delete(f"refresh:{user_id}")
+
+    new_refresh_token = create_access_token(
+        data={"sub": user_id, "type": "refresh"},
+        expires_delta=remaining_delta,
+    )
+    redis_client.setex(f"refresh:{user_id}", remaining_ttl, new_refresh_token)
+
+    return {
+        "access_token": new_access_token,
+        "refresh_token": new_refresh_token,
+        "token_type": "bearer",
+    }
