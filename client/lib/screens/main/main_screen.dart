@@ -1070,6 +1070,7 @@ class _ComposerState extends State<_Composer> {
                   valueListenable: widget.controller,
                   builder: (context, value, child) {
                     final canSend = !widget.sending &&
+                        !widget.isCancelRequested &&
                         value.text.trim().isNotEmpty &&
                         (!widget.whisper || widget.selectedAgentIds.isNotEmpty);
                     return IconButton.filled(

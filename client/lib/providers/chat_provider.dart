@@ -129,29 +129,6 @@ class ChatProvider extends ChangeNotifier {
 
   Future<void> selectRoom(String roomId, String userId) async {
     if (_selectedRoomId != roomId) {
-      // Fire-and-forget cancel for the active generation when leaving the room.
-      if ((_generationState == GenerationState.generating ||
-              _generationState == GenerationState.cancelRequested) &&
-          _generationId != null) {
-        final prevRoomId = _selectedRoomId;
-        final genId = _generationId!;
-        if (prevRoomId != null) {
-          unawaited(
-            _service
-                .cancelGeneration(
-                  roomId: prevRoomId,
-                  generationId: genId,
-                  requestSource: 'room_leave',
-                )
-                .catchError((Object e) {
-              debugPrint('[ChatProvider.selectRoom] auto-cancel error: $e');
-              return <String, dynamic>{};
-            }),
-          );
-        }
-      }
-      final prevRoomId = _selectedRoomId;
-      if (prevRoomId != null) unawaited(_clearGenerationState(prevRoomId));
       _hasPendingTasks = false;
       _pendingTaskIds = const {};
       _pendingTasksCompleted = 0;
@@ -234,6 +211,7 @@ class ChatProvider extends ChangeNotifier {
     if (roomId == null || text.trim().isEmpty) {
       return null;
     }
+    if (_hasPendingTasks || _generationState == GenerationState.cancelRequested) return null;
 
     _lastUserId = userId;
     _isSending = true;
@@ -272,7 +250,7 @@ class ChatProvider extends ChangeNotifier {
             .firstOrNull;
         _generationState = GenerationState.generating;
         if (_generationId != null && _generationTaskId != null) {
-          unawaited(_saveGenerationState(roomId, _generationId!, _generationTaskId!));
+          await _saveGenerationState(roomId, _generationId!, _generationTaskId!);
         }
       } else {
         _generationState = GenerationState.idle;
@@ -496,13 +474,7 @@ class ChatProvider extends ChangeNotifier {
       if (httpStatus == 200) {
         if (_generationState == GenerationState.cancelRequested ||
             _generationState == GenerationState.generating) {
-          _hasPendingTasks = false;
-          _pendingTaskIds = const {};
-          _pendingTasksCompleted = 0;
           _generationState = GenerationState.cancelled;
-          unawaited(_clearGenerationState(roomId));
-          _generationId = null;
-          _generationTaskId = null;
         }
       } else if (httpStatus == 409) {
         final errorCode = result['error_code']?.toString() ?? '';
@@ -555,6 +527,8 @@ class ChatProvider extends ChangeNotifier {
       debugPrint('$stackTrace');
       if (_generationState == GenerationState.cancelRequested) {
         _generationState = GenerationState.generating;
+        _hasPendingTasks = false;
+        _pendingTaskIds = const {};
       }
     }
 
