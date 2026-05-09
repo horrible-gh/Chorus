@@ -37,6 +37,9 @@ class ChatPushService extends ChangeNotifier {
   String? _currentRoomId;
   String? _currentToken;
 
+  final Map<String, WebSocketChannel> _backgroundChannels = {};
+  final Map<String, StreamSubscription<dynamic>> _backgroundSubscriptions = {};
+
   int _retryCount = 0;
   Duration _currentDelay = _kReconnectInitialDelay;
   Timer? _reconnectTimer;
@@ -62,7 +65,8 @@ class ChatPushService extends ChangeNotifier {
   /// Starts a WebSocket subscription for the given room_id.
   ///
   /// Does nothing if already connected to the same room.
-  /// If connected to a different room, closes the existing connection and reconnects to the new room.
+  /// If connected to a different room, moves the existing connection to the
+  /// background (kept alive) and opens a new connection for the new room.
   void connect(String roomId, String token) {
     if (_currentRoomId == roomId &&
         (_status == ChatPushStatus.pushConnected ||
@@ -71,7 +75,13 @@ class ChatPushService extends ChangeNotifier {
     }
     _cancelReconnectTimer();
     _cancelFallbackReconnectTimer();
-    _closeCurrentConnection();
+    final prevRoomId = _currentRoomId;
+    if (prevRoomId != null) {
+      if (_channel != null) _backgroundChannels[prevRoomId] = _channel!;
+      if (_subscription != null) _backgroundSubscriptions[prevRoomId] = _subscription!;
+      _channel = null;
+      _subscription = null;
+    }
     _currentRoomId = roomId;
     _currentToken = token;
     _resetState();
@@ -299,6 +309,10 @@ class ChatPushService extends ChangeNotifier {
     _cancelReconnectTimer();
     _cancelFallbackReconnectTimer();
     _closeCurrentConnection();
+    for (final sub in _backgroundSubscriptions.values) sub.cancel();
+    for (final ch in _backgroundChannels.values) ch.sink.close(1000);
+    _backgroundSubscriptions.clear();
+    _backgroundChannels.clear();
     super.dispose();
   }
 }
