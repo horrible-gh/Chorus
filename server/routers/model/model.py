@@ -25,4 +25,18 @@ async def create_model(body: ModelCreateRequest):
 
 @router.patch("/{model_id}", response_model=ModelResponse)
 async def update_model(model_id: str, body: ModelUpdateRequest):
-    return STORE.update_model_registry(model_id, body.model_dump(exclude_none=True))
+    updates = body.model_dump(exclude_none=True)
+    new_name = updates.pop("model_name", None)
+    if new_name is not None:
+        STORE.rename_model(model_id, new_name)
+    if updates:
+        return STORE.update_model_registry(model_id, updates)
+    row = STORE.get_model(model_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail={"error": "model not found"})
+    return row
+
+
+@router.delete("/{model_id}", status_code=204)
+async def delete_model(model_id: str):
+    STORE.delete_model(model_id)

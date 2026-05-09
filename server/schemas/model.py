@@ -41,6 +41,7 @@ class ModelCreateRequest(BaseModel):
 
 
 class ModelUpdateRequest(BaseModel):
+    model_name: Optional[str] = None
     grade: Optional[str] = None
     is_active: Optional[bool] = None
     is_default: Optional[bool] = None
@@ -48,6 +49,13 @@ class ModelUpdateRequest(BaseModel):
     priority: Optional[int] = None
     max_context_tokens: Optional[int] = None
     provider_options_json: Optional[Dict[str, Any]] = None
+
+    @field_validator("model_name")
+    @classmethod
+    def validate_model_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not _MODEL_NAME_RE.match(v):
+            raise ValueError("model_name must match ^[a-zA-Z0-9\\-\\.]+$")
+        return v
 
     @field_validator("grade")
     @classmethod

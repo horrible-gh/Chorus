@@ -570,6 +570,45 @@ class ChorusStore:
             result["warning"] = warning
         return result
 
+    def rename_model(self, model_id: str, new_name: str) -> dict:
+        row = self.get_model(model_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail={"error": "model not found"})
+        if not new_name:
+            raise HTTPException(status_code=422, detail={"error": "model_name cannot be empty"})
+        existing = self._fetch_one(
+            "SELECT model_id FROM model_registry WHERE runner = ? AND model_name = ?",
+            [row["runner"], new_name],
+        )
+        if existing:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "model name already exists for this runner",
+                    "detail": f"runner={row['runner']}, model_name={new_name}",
+                },
+            )
+        now = now_iso()
+        self._execute(
+            "UPDATE model_registry SET model_name = ?, updated_at = ? WHERE model_id = ?",
+            [new_name, now, model_id],
+        )
+        return self.get_model(model_id)
+
+    def delete_model(self, model_id: str) -> None:
+        row = self.get_model(model_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail={"error": "model not found"})
+        if row.get("is_default"):
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "Cannot delete default model"},
+            )
+        self._execute(
+            "DELETE FROM model_registry WHERE model_id = ?",
+            [model_id],
+        )
+
     def _routing_from_row(self, row: Optional[dict]) -> Optional[dict]:
         if row is None:
             return None

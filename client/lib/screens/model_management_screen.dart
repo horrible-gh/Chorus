@@ -139,6 +139,42 @@ class _ModelManagementScreenState extends State<ModelManagementScreen> {
     }
   }
 
+  Future<void> _deleteModel(ModelRegistry model) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Delete Model?'),
+        content: Text(
+          'Permanently delete "${model.modelName}" (${model.runner})?\nThis action cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+            ),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await _service!.deleteModel(model.modelId);
+      await _loadModels();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e')),
+        );
+      }
+    }
+  }
+
   Future<void> _setDefault(ModelRegistry model) async {
     try {
       await _service!.updateModel(
@@ -196,6 +232,7 @@ class _ModelManagementScreenState extends State<ModelManagementScreen> {
                             onEdit: _showEditModal,
                             onToggleActive: _toggleActive,
                             onSetDefault: _setDefault,
+                            onDelete: _deleteModel,
                           ),
           ),
         ],
@@ -278,12 +315,14 @@ class _ModelList extends StatelessWidget {
     required this.onEdit,
     required this.onToggleActive,
     required this.onSetDefault,
+    required this.onDelete,
   });
 
   final List<ModelRegistry> models;
   final ValueChanged<ModelRegistry> onEdit;
   final ValueChanged<ModelRegistry> onToggleActive;
   final ValueChanged<ModelRegistry> onSetDefault;
+  final ValueChanged<ModelRegistry> onDelete;
 
   @override
   Widget build(BuildContext context) {
@@ -351,6 +390,15 @@ class _ModelList extends StatelessWidget {
                   icon: const Icon(Icons.star_outline, size: 18),
                   onPressed: () => onSetDefault(m),
                 ),
+              IconButton(
+                tooltip: m.isDefault ? 'Cannot delete default model' : 'Delete',
+                icon: Icon(
+                  Icons.delete_outline,
+                  size: 18,
+                  color: m.isDefault ? null : Theme.of(context).colorScheme.error,
+                ),
+                onPressed: m.isDefault ? null : () => onDelete(m),
+              ),
             ],
           ),
         ),
@@ -500,9 +548,12 @@ class _ModelFormModalState extends State<_ModelFormModal> {
       final providerOptionsText = _providerOptionsCtrl.text.trim();
 
       if (_isEdit) {
+        final originalName = widget.existingModel!.modelName;
+        final newName = _modelNameCtrl.text.trim();
         await widget.service.updateModel(
           modelId: widget.existingModel!.modelId,
           request: ModelRegistryUpdateRequest(
+            modelName: newName != originalName ? newName : null,
             grade: _grade,
             isDefault: _isDefault,
             estimatedCostRank: int.tryParse(_costRankCtrl.text.trim()),
@@ -583,16 +634,10 @@ class _ModelFormModalState extends State<_ModelFormModal> {
                 // model_name
                 TextFormField(
                   controller: _modelNameCtrl,
-                  readOnly: _isEdit,
-                  decoration: InputDecoration(
+                  readOnly: false,
+                  decoration: const InputDecoration(
                     labelText: 'Model Name *',
-                    border: const OutlineInputBorder(),
-                    filled: _isEdit,
-                    fillColor: _isEdit
-                        ? Theme.of(context)
-                            .colorScheme
-                            .surfaceContainerHighest
-                        : null,
+                    border: OutlineInputBorder(),
                   ),
                   validator: (v) {
                     if (v == null || v.trim().isEmpty) return 'Required';

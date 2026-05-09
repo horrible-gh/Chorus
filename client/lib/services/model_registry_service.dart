@@ -45,6 +45,10 @@ class ModelRegistryService {
     );
   }
 
+  Future<void> deleteModel(String modelId) async {
+    await _dio.delete<dynamic>('/models/$modelId');
+  }
+
   static Map<String, dynamic> _map(Object? value) {
     if (value is Map<String, dynamic>) return value;
     if (value is Map) return Map<String, dynamic>.from(value);

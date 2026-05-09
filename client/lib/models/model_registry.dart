@@ -84,6 +84,7 @@ class ModelRegistryCreateRequest {
 
 class ModelRegistryUpdateRequest {
   const ModelRegistryUpdateRequest({
+    this.modelName,
     this.grade,
     this.isActive,
     this.isDefault,
@@ -94,6 +95,7 @@ class ModelRegistryUpdateRequest {
     this.clearProviderOptions = false,
   });
 
+  final String? modelName;
   final String? grade;
   final bool? isActive;
   final bool? isDefault;
@@ -105,6 +107,7 @@ class ModelRegistryUpdateRequest {
 
   Map<String, dynamic> toJson() {
     return {
+      if (modelName != null) 'model_name': modelName,
       if (grade != null) 'grade': grade,
       if (isActive != null) 'is_active': isActive,
       if (isDefault != null) 'is_default': isDefault,
