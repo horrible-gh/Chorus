@@ -79,6 +79,19 @@ def cancel_generation(
     # Already terminal states
     if status in _TERMINAL_COMPLETED:
         completed_at = task.get("completed_at")
+        # Retroactively remove the AI response so it does not appear to the user.
+        try:
+            deleted = STORE.delete_agent_messages_for_task(task["task_id"])
+            if deleted:
+                logger.info(
+                    f"[cancel_generation] retroactively deleted {deleted} agent message(s)"
+                    f" for generation_id={generation_id!r} task_id={task['task_id']!r}"
+                )
+        except Exception as exc:
+            logger.warning(
+                f"[cancel_generation] failed to delete agent messages for"
+                f" task_id={task['task_id']!r}: {exc}"
+            )
         _log_cancel(
             generation_id=generation_id,
             task_id=task["task_id"],
@@ -163,6 +176,46 @@ def cancel_generation(
                 requested_at=requested_at,
                 processed_at=cancelled_at,
             )
+
+            # Propagate cancellation to sibling tasks spawned from the same
+            # user message (multi-agent scenario where each agent gets its own task).
+            source_message_id = task.get("source_message_id")
+            if source_message_id:
+                status_placeholders = ",".join("?" * len(_CANCELLABLE_STATUSES))
+                sibling_rows = STORE._fetch_all(
+                    f"SELECT * FROM tasks"
+                    f" WHERE source_message_id = ? AND task_id != ?"
+                    f" AND status IN ({status_placeholders})",
+                    [source_message_id, task_id, *_CANCELLABLE_STATUSES],
+                )
+                for row in sibling_rows:
+                    sibling = STORE._task_from_row(row)
+                    if not sibling:
+                        continue
+                    STORE.update_task(
+                        sibling["task_id"],
+                        {
+                            "status": "cancelled",
+                            "cancel_requested_at": requested_at,
+                            "cancelled_at": cancelled_at,
+                            "updated_at": cancelled_at,
+                        },
+                    )
+                    _log_cancel(
+                        generation_id=generation_id,
+                        task_id=sibling["task_id"],
+                        room_id=room_id,
+                        requested_by_user_id=requested_by_user_id,
+                        request_source=request_source,
+                        result="cancelled",
+                        requested_at=requested_at,
+                        processed_at=cancelled_at,
+                    )
+                    logger.info(
+                        f"[cancel_generation] propagated cancel to sibling"
+                        f" task_id={sibling['task_id']!r}"
+                        f" (generation_id={generation_id!r})"
+                    )
 
         logger.info(
             f"[cancel_generation] cancelled generation_id={generation_id!r} task_id={task_id!r}"
