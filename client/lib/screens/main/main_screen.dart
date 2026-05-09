@@ -569,6 +569,7 @@ class _ChatPaneState extends State<_ChatPane> {
                               message: message,
                               senderName: _senderName(message, chat),
                               isPinned: alreadyPinned,
+                              isCancelled: message.isCancelled,
                               onPinRequested: alreadyPinned
                                   ? null
                                   : () => _onPinMessage(message.messageId),
@@ -1099,6 +1100,7 @@ class _MessageBubble extends StatelessWidget {
     required this.message,
     required this.senderName,
     this.isPinned = false,
+    this.isCancelled = false,
     this.onPinRequested,
     this.onUnpinRequested,
   });
@@ -1106,6 +1108,7 @@ class _MessageBubble extends StatelessWidget {
   final ChatMessage message;
   final String senderName;
   final bool isPinned;
+  final bool isCancelled;
   final VoidCallback? onPinRequested;
   final VoidCallback? onUnpinRequested;
 
@@ -1181,6 +1184,24 @@ class _MessageBubble extends StatelessWidget {
                           Icons.push_pin,
                           size: 14,
                           color: textColor,
+                        ),
+                      if (isCancelled)
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 1,
+                          ),
+                          decoration: BoxDecoration(
+                            color: colorScheme.surfaceContainerHighest,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            'Cancelled',
+                            style:
+                                Theme.of(context).textTheme.labelSmall?.copyWith(
+                                      color: colorScheme.onSurfaceVariant,
+                                    ),
+                          ),
                         ),
                     ],
                   ),

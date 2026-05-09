@@ -126,6 +126,7 @@ class ChatMessage {
     required this.deliveryMode,
     required this.historyState,
     required this.createdAt,
+    required this.isCancelled,
     this.senderUserId,
     this.senderAgentId,
     this.sourceTaskId,
@@ -146,6 +147,7 @@ class ChatMessage {
   final String? sourceTaskId;
   final ContextUsage? contextUsage;
   final String createdAt;
+  final bool isCancelled;
 
   bool get isFromUser => senderType == 'user';
   bool get isFromAgent => senderType == 'agent';
@@ -171,6 +173,7 @@ class ChatMessage {
       historyState: _string(json['history_state']),
       sourceTaskId: _nullableString(json['source_task_id']),
       createdAt: _string(json['created_at']),
+      isCancelled: json['is_cancelled'] == 1,
       contextUsage: rawContextUsage is Map<String, dynamic>
           ? ContextUsage.fromJson(rawContextUsage)
           : null,

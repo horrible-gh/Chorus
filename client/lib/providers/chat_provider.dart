@@ -55,8 +55,6 @@ class ChatProvider extends ChangeNotifier {
   String? _generationId;
   String? _generationTaskId;
   bool _cancelDebounceActive = false;
-  String? _lastSentMessageId;
-  Map<String, Set<String>> _cancelledMessageIds = {};
 
   List<ChatRoom> get rooms => _rooms;
   List<AgentPreset> get agents => _agents;
@@ -74,8 +72,6 @@ class ChatProvider extends ChangeNotifier {
   ChatPushStatus get pushStatus => _pushService.status;
   GenerationState get generationState => _generationState;
   String? get generationId => _generationId;
-  Set<String> get cancelledMessageIds =>
-      _cancelledMessageIds[_selectedRoomId] ?? const {};
 
   ChatRoom? get selectedRoom {
     for (final room in _rooms) {
@@ -139,7 +135,6 @@ class ChatProvider extends ChangeNotifier {
       _generationState = GenerationState.idle;
       _generationId = null;
       _generationTaskId = null;
-      _lastSentMessageId = null;
     }
     _selectedRoomId = roomId;
     _lastUserId = userId;
@@ -238,7 +233,6 @@ class ChatProvider extends ChangeNotifier {
       );
       _messages = [..._messages, result.message];
       _touchSelectedRoom(result.message.createdAt);
-      _lastSentMessageId = result.message.messageId;
       _isSending = false;
       // route_* IDs are not worker tasks; only IDs with a task_ prefix are registered as pending.
       final workerTaskIds = result.createdTasks
@@ -323,7 +317,6 @@ class ChatProvider extends ChangeNotifier {
               (_generationState == GenerationState.generating ||
                   _generationState == GenerationState.cancelRequested)) {
             _generationState = GenerationState.cancelled;
-            _markLastSentMessageCancelled();
           } else if (failedIds.isNotEmpty &&
               (_generationState == GenerationState.generating ||
                   _generationState == GenerationState.cancelRequested)) {
@@ -453,14 +446,6 @@ class ChatProvider extends ChangeNotifier {
     return cancelledIds;
   }
 
-  void _markLastSentMessageCancelled() {
-    final msgId = _lastSentMessageId;
-    final roomId = _selectedRoomId;
-    if (msgId != null && roomId != null) {
-      (_cancelledMessageIds[roomId] ??= {}).add(msgId);
-    }
-  }
-
   Future<void> cancelGeneration(String userId) async {
     if (_cancelDebounceActive) return;
     if (_generationId == null) return;
@@ -493,7 +478,6 @@ class ChatProvider extends ChangeNotifier {
           _pendingTaskIds = const {};
           _pendingTasksCompleted = 0;
           _generationState = GenerationState.cancelled;
-          _markLastSentMessageCancelled();
           unawaited(_clearGenerationState(roomId));
           _generationId = null;
           _generationTaskId = null;
@@ -519,7 +503,6 @@ class ChatProvider extends ChangeNotifier {
             _pendingTaskIds = const {};
             _pendingTasksCompleted = 0;
             _generationState = GenerationState.cancelled;
-            _markLastSentMessageCancelled();
             unawaited(_clearGenerationState(roomId));
             _generationId = null;
             _generationTaskId = null;

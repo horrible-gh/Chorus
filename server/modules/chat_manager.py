@@ -411,6 +411,12 @@ class ChorusStore:
         rows = self._fetch_all(self._sql("list_messages"), [room_id])
         return [self._message_from_row(row) for row in rows]
 
+    def mark_message_cancelled(self, message_id: str) -> None:
+        self._execute(
+            "UPDATE messages SET is_cancelled = 1 WHERE message_id = ?",
+            [message_id],
+        )
+
     # ── message_recipients ────────────────────────────────────────────────
 
     def insert_message_recipient(self, recipient: dict) -> dict:
@@ -684,6 +690,30 @@ class ChorusStore:
             [generation_id],
         )
         return self._task_from_row(row)
+
+    def delete_agent_messages_for_task(self, task_id: str) -> int:
+        """Hard-delete agent response messages persisted for a completed task.
+
+        Removes message_recipients rows first (FK dependency), then the messages.
+        Returns the number of messages deleted.
+        """
+        rows = self._fetch_all(
+            "SELECT message_id FROM messages WHERE source_task_id = ? AND sender_type = 'agent'",
+            [task_id],
+        )
+        if not rows:
+            return 0
+        message_ids = [r["message_id"] for r in rows]
+        placeholders = ",".join("?" * len(message_ids))
+        self._execute(
+            f"DELETE FROM message_recipients WHERE message_id IN ({placeholders})",
+            message_ids,
+        )
+        self._execute(
+            f"DELETE FROM messages WHERE message_id IN ({placeholders})",
+            message_ids,
+        )
+        return len(message_ids)
 
     def insert_cancel_log(self, log: dict) -> dict:
         self._execute(
@@ -1253,6 +1283,8 @@ def _build_chat_history(room_id: str, exclude_message_id: str) -> List[dict]:
         if msg.get("history_state") != "active":
             continue
         if msg.get("visibility") != "room":
+            continue
+        if msg.get("is_cancelled"):
             continue
         role = "assistant" if msg.get("sender_agent_id") else "user"
         history.append({"role": role, "content": msg["text"]})

@@ -102,6 +102,12 @@ def cancel_generation(
             requested_at=requested_at,
             processed_at=now_iso(),
         )
+        source_message_id = task.get("source_message_id")
+        if source_message_id:
+            try:
+                STORE.mark_message_cancelled(source_message_id)
+            except Exception as exc:
+                logger.warning(f"[cancel_generation] failed to mark message cancelled: {exc}")
         return {
             "generation_id": generation_id,
             "room_id": room_id,
@@ -216,6 +222,10 @@ def cancel_generation(
                         f" task_id={sibling['task_id']!r}"
                         f" (generation_id={generation_id!r})"
                     )
+                try:
+                    STORE.mark_message_cancelled(source_message_id)
+                except Exception as exc:
+                    logger.warning(f"[cancel_generation] failed to mark message cancelled: {exc}")
 
         logger.info(
             f"[cancel_generation] cancelled generation_id={generation_id!r} task_id={task_id!r}"

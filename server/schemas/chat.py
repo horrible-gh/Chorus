@@ -105,6 +105,7 @@ class Message(BaseModel):
     source_task_id: Optional[str] = None
     created_at: str
     context_usage: Optional[Any] = None
+    is_cancelled: int = 0
 
 
 class RoomEvent(BaseModel):

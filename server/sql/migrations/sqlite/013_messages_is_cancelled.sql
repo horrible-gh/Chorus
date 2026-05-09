@@ -1,0 +1,1 @@
+ALTER TABLE messages ADD COLUMN is_cancelled INTEGER NOT NULL DEFAULT 0;
