@@ -1499,22 +1499,23 @@ def _call_ai_streaming(
                         on_chunk(delta)
                     except Exception as _e:
                         logger.warning("[_call_ai_streaming] copilot on_chunk error: %s", _e)
-                stdout_lines.append(delta)
+                if delta:
+                    stdout_lines.append(delta)
 
             elif event_type == "assistant.message":
-                # fallback: full message if no deltas arrived
-                if not stdout_lines:
-                    content = data.get("content", "")
-                    if content:
-                        stdout_lines.append(content)
-                        if on_chunk:
-                            try:
-                                on_chunk(content)
-                            except Exception as _e:
-                                logger.warning("[_call_ai_streaming] copilot on_chunk error: %s", _e)
+                # Full message event: use as authoritative fallback if no deltas arrived.
+                # Both Claude and GPT emit this event before assistant.turn_end.
+                _full_content = data.get("content", "")
+                if _full_content and not stdout_lines:
+                    stdout_lines.append(_full_content)
+                    if on_chunk:
+                        try:
+                            on_chunk(_full_content)
+                        except Exception as _e:
+                            logger.warning("[_call_ai_streaming] copilot on_chunk error: %s", _e)
 
             elif event_type == "assistant.turn_end":
-                # explicit completion signal — exit loop
+                # Explicit completion signal for all copilot-runner models (Claude and GPT alike).
                 break
 
             elif event_type == "result":
@@ -1526,7 +1527,8 @@ def _call_ai_streaming(
                 break
 
             # skip: session.*, user.message, assistant.reasoning_delta,
-            #        assistant.reasoning, assistant.message_start, assistant.turn_start
+            #        assistant.reasoning, assistant.message_start, assistant.turn_start,
+            #        assistant.tool_call, tool.*, user.tool_result
 
         # wait for process
         try:
@@ -1543,6 +1545,11 @@ def _call_ai_streaming(
         result_returncode = proc.returncode if proc.returncode is not None else _exit_code
 
         result_stdout = "".join(stdout_lines)
+        if not result_stdout:
+            logger.warning(
+                "[_call_ai_streaming] copilot: empty response for model=%s returncode=%s stderr=%s",
+                model, result_returncode, (stderr_text or "")[:200],
+            )
         context_usage = {}
         return result_stdout, context_usage
 
