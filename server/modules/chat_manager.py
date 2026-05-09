@@ -1706,27 +1706,22 @@ def _call_ai_streaming(
             except json.JSONDecodeError:
                 continue
             _etype = _event.get("type", "")
+            if _etype in ("thread.started", "turn.started"):
+                continue
             if _etype == "turn.completed":
                 codex_usage = _event.get("usage")
-            _item = _event.get("item") or _event.get("message") or {}
-            if isinstance(_item, dict) and _item.get("role") == "assistant":
-                _content = _item.get("content") or []
-                chunk_text = ""
-                if isinstance(_content, list):
-                    for _block in _content:
-                        if isinstance(_block, dict):
-                            _txt = _block.get("text") or _block.get("output_text")
-                            if _txt:
-                                answer_parts.append(str(_txt))
-                                chunk_text += str(_txt)
-                elif isinstance(_content, str):
-                    answer_parts.append(_content)
-                    chunk_text = _content
-                if chunk_text and on_chunk:
-                    try:
-                        on_chunk(chunk_text)
-                    except Exception as _cb_exc:
-                        logger.warning(f"[_call_ai_streaming] on_chunk error: {_cb_exc}")
+                break
+            if _etype == "item.completed":
+                _item = _event.get("item") or {}
+                if isinstance(_item, dict) and _item.get("type") == "agent_message":
+                    _txt = _item.get("text", "")
+                    if _txt:
+                        answer_parts.append(str(_txt))
+                        if on_chunk:
+                            try:
+                                on_chunk(str(_txt))
+                            except Exception as _cb_exc:
+                                logger.warning(f"[_call_ai_streaming] on_chunk error: {_cb_exc}")
         if _was_killed:
             try:
                 proc.wait(timeout=5)
@@ -1959,20 +1954,17 @@ def _call_ai_sync(
             except json.JSONDecodeError:
                 continue
             _etype = _event.get("type", "")
+            if _etype in ("thread.started", "turn.started"):
+                continue
             if _etype == "turn.completed":
                 codex_usage = _event.get("usage")
-            # Text extraction from item events (best-effort, NR027 schema).
-            _item = _event.get("item") or _event.get("message") or {}
-            if isinstance(_item, dict) and _item.get("role") == "assistant":
-                _content = _item.get("content") or []
-                if isinstance(_content, list):
-                    for _block in _content:
-                        if isinstance(_block, dict):
-                            _txt = _block.get("text") or _block.get("output_text")
-                            if _txt:
-                                answer_parts.append(str(_txt))
-                elif isinstance(_content, str):
-                    answer_parts.append(_content)
+                break
+            if _etype == "item.completed":
+                _item = _event.get("item") or {}
+                if isinstance(_item, dict) and _item.get("type") == "agent_message":
+                    _txt = _item.get("text", "")
+                    if _txt:
+                        answer_parts.append(str(_txt))
         output = "".join(answer_parts).strip()
         if not output:
             # Fallback: if JSONL text extraction yields nothing, use stripped stdout.
