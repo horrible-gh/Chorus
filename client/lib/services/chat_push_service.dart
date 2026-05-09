@@ -55,6 +55,10 @@ class ChatPushService extends ChangeNotifier {
   /// Argument: room_id
   void Function(String roomId)? onMessageCompleted;
 
+  /// Callback invoked when a message_delta streaming event is received.
+  /// Arguments: taskId, roomId, delta text chunk
+  void Function(String taskId, String roomId, String delta, String? agentId)? onMessageDelta;
+
   static const int _kReconnectMaxRetries = 5;
   static const Duration _kReconnectInitialDelay = Duration(seconds: 1);
   static const int _kReconnectMultiplier = 2;
@@ -168,6 +172,9 @@ class ChatPushService extends ChangeNotifier {
         case 'message_completed':
           _onMessageCompletedEvent(json);
 
+        case 'message_delta':
+          _onMessageDeltaEvent(json);
+
         case 'heartbeat':
           // Skipping last_heartbeat_at recording (Phase 1 simple implementation)
           break;
@@ -207,6 +214,18 @@ class ChatPushService extends ChangeNotifier {
     _lastTaskProcessedAt = now;
 
     _triggerListMessagesRefresh(eventRoomId);
+  }
+
+  void _onMessageDeltaEvent(Map<String, dynamic> event) {
+    final eventRoomId = event['room_id'] as String?;
+    if (eventRoomId == null || eventRoomId != _currentRoomId) return;
+
+    final taskId = event['task_id'] as String?;
+    final delta = event['delta'] as String?;
+    if (taskId == null || delta == null || delta.isEmpty) return;
+
+    final agentId = event['agent_id'] as String?;
+    onMessageDelta?.call(taskId, eventRoomId, delta, agentId);
   }
 
   void _triggerListMessagesRefresh(String roomId) {
