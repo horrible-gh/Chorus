@@ -1095,7 +1095,7 @@ class _ComposerState extends State<_Composer> {
   }
 }
 
-class _MessageBubble extends StatelessWidget {
+class _MessageBubble extends StatefulWidget {
   const _MessageBubble({
     required this.message,
     required this.senderName,
@@ -1113,7 +1113,38 @@ class _MessageBubble extends StatelessWidget {
   final VoidCallback? onUnpinRequested;
 
   @override
+  State<_MessageBubble> createState() => _MessageBubbleState();
+}
+
+class _MessageBubbleState extends State<_MessageBubble> {
+  late bool _isThinkingExpanded;
+
+  @override
+  void initState() {
+    super.initState();
+    _isThinkingExpanded = widget.message.isThinkingExpanded;
+  }
+
+  @override
+  void didUpdateWidget(_MessageBubble oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.message.isThinkingStreaming != oldWidget.message.isThinkingStreaming) {
+      if (widget.message.isThinkingStreaming) {
+        _isThinkingExpanded = true;
+      } else if (!widget.message.isThinkingStreaming && oldWidget.message.isThinkingStreaming) {
+        _isThinkingExpanded = false;
+      }
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final message = widget.message;
+    final senderName = widget.senderName;
+    final isPinned = widget.isPinned;
+    final isCancelled = widget.isCancelled;
+    final onPinRequested = widget.onPinRequested;
+    final onUnpinRequested = widget.onUnpinRequested;
     final colorScheme = Theme.of(context).colorScheme;
     final alignRight = message.isFromUser;
     final bubbleColor = message.isFromUser
@@ -1215,6 +1246,18 @@ class _MessageBubble extends StatelessWidget {
                             color: textColor,
                           ),
                     ),
+                   if (message.thinkingContent.isNotEmpty)
+                     _ThinkingSection(
+                       thinkingContent: message.thinkingContent,
+                       isStreaming: message.isThinkingStreaming,
+                       isExpanded: _isThinkingExpanded,
+                       textColor: textColor,
+                       onToggleExpanded: () {
+                         setState(() {
+                           _isThinkingExpanded = !_isThinkingExpanded;
+                         });
+                       },
+                     ),
                   if (message.isFromAgent && message.contextUsage != null)
                     _ContextMeterBar(
                       contextUsage: message.contextUsage!,
@@ -1230,6 +1273,9 @@ class _MessageBubble extends StatelessWidget {
   }
 
   void _showContextMenu(BuildContext context, Offset position) {
+    final isPinned = this.isPinned;
+    final onPinRequested = this.onPinRequested;
+    final onUnpinRequested = this.onUnpinRequested;
     showMenu<void>(
       context: context,
       position: RelativeRect.fromLTRB(
@@ -1261,6 +1307,76 @@ class _MessageBubble extends StatelessWidget {
                   child: Text('Pin', overflow: TextOverflow.ellipsis),
                 ),
               ],
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+/// Displays the thinking (reasoning) content in a collapsible section.
+class _ThinkingSection extends StatelessWidget {
+  const _ThinkingSection({
+    required this.thinkingContent,
+    required this.isStreaming,
+    required this.isExpanded,
+    required this.textColor,
+    required this.onToggleExpanded,
+  });
+
+  final String thinkingContent;
+  final bool isStreaming;
+  final bool isExpanded;
+  final Color textColor;
+  final VoidCallback onToggleExpanded;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 8),
+        InkWell(
+          onTap: onToggleExpanded,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                isExpanded ? Icons.expand_less : Icons.expand_more,
+                size: 18,
+                color: textColor,
+              ),
+              const SizedBox(width: 4),
+              Text(
+                isStreaming ? 'Thinking...' : 'Thinking',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: textColor,
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (isExpanded)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                border: Border(
+                  left: BorderSide(
+                    color: textColor.withAlpha(128),
+                    width: 2,
+                  ),
+                ),
+              ),
+              child: SelectableText(
+                thinkingContent,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: textColor.withAlpha(200),
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
             ),
           ),
       ],

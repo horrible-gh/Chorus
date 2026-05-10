@@ -59,6 +59,14 @@ class ChatPushService extends ChangeNotifier {
   /// Arguments: taskId, roomId, delta text chunk
   void Function(String taskId, String roomId, String delta, String? agentId)? onMessageDelta;
 
+  /// Callback invoked when a thinking_delta streaming event is received.
+  /// Arguments: taskId, roomId, delta text chunk
+  void Function(String taskId, String roomId, String delta)? onThinkingDelta;
+
+  /// Callback invoked when a thinking_completed event is received.
+  /// Arguments: taskId, roomId
+  void Function(String taskId, String roomId)? onThinkingCompleted;
+
   static const int _kReconnectMaxRetries = 5;
   static const Duration _kReconnectInitialDelay = Duration(seconds: 1);
   static const int _kReconnectMultiplier = 2;
@@ -175,6 +183,12 @@ class ChatPushService extends ChangeNotifier {
         case 'message_delta':
           _onMessageDeltaEvent(json);
 
+        case 'thinking_delta':
+          _onThinkingDeltaEvent(json);
+
+        case 'thinking_completed':
+          _onThinkingCompletedEvent(json);
+
         case 'heartbeat':
           // Skipping last_heartbeat_at recording (Phase 1 simple implementation)
           break;
@@ -226,6 +240,27 @@ class ChatPushService extends ChangeNotifier {
 
     final agentId = event['agent_id'] as String?;
     onMessageDelta?.call(taskId, eventRoomId, delta, agentId);
+  }
+
+  void _onThinkingDeltaEvent(Map<String, dynamic> event) {
+    final eventRoomId = event['room_id'] as String?;
+    if (eventRoomId == null || eventRoomId != _currentRoomId) return;
+
+    final taskId = event['task_id'] as String?;
+    final delta = event['delta'] as String?;
+    if (taskId == null || delta == null || delta.isEmpty) return;
+
+    onThinkingDelta?.call(taskId, eventRoomId, delta);
+  }
+
+  void _onThinkingCompletedEvent(Map<String, dynamic> event) {
+    final eventRoomId = event['room_id'] as String?;
+    if (eventRoomId == null || eventRoomId != _currentRoomId) return;
+
+    final taskId = event['task_id'] as String?;
+    if (taskId == null) return;
+
+    onThinkingCompleted?.call(taskId, eventRoomId);
   }
 
   void _triggerListMessagesRefresh(String roomId) {

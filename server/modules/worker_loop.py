@@ -65,6 +65,44 @@ def _publish_message_completed(task_id: str, task: dict) -> None:
         )
 
 
+
+def _publish_thinking_delta(task_id: str, room_id: str, delta: str) -> None:
+    """Publishes a thinking_delta event during Claude reasoning streaming."""
+    from modules.push_manager import push_manager
+    payload = {
+        "type": "thinking_delta",
+        "task_id": task_id,
+        "room_id": room_id,
+        "delta": delta,
+        "timestamp": now_iso(),
+    }
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(push_manager.publish(room_id, payload))
+    except RuntimeError:
+        logger.warning(
+            f"[_publish_thinking_delta] no running event loop for task {task_id!r}"
+        )
+
+
+def _publish_thinking_completed(task_id: str, room_id: str) -> None:
+    """Publishes the thinking_completed event when Claude reasoning finishes."""
+    from modules.push_manager import push_manager
+    payload = {
+        "type": "thinking_completed",
+        "task_id": task_id,
+        "room_id": room_id,
+        "timestamp": now_iso(),
+    }
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(push_manager.publish(room_id, payload))
+    except RuntimeError:
+        logger.warning(
+            f"[_publish_thinking_completed] no running event loop for task {task_id!r}"
+        )
+
+
 def _task_response(task: dict) -> dict:
     return task
 
@@ -472,6 +510,12 @@ async def _dispatch_one_task(task: dict) -> None:
                     push_manager.publish(room_id, payload), loop
                 )
 
+            def _on_thinking_chunk(chunk: str) -> None:
+                _publish_thinking_delta(task_id, room_id, chunk)
+
+            def _on_thinking_completed() -> None:
+                _publish_thinking_completed(task_id, room_id)
+
             def _is_cancelled() -> bool:
                 t = STORE.get_task(task_id)
                 return t is not None and t.get("status") == "cancelled"
@@ -484,12 +528,16 @@ async def _dispatch_one_task(task: dict) -> None:
                 history=history,
                 user_text=instruction,
                 on_chunk=_on_chunk,
+                on_thinking_chunk=_on_thinking_chunk if runner == "copilot" else None,
                 pinned_context=agent.get("pinned_context") if agent else None,
                 provider_token_id=provider_token_id,
                 work_dir=work_dir,
                 allowed_dirs=allowed_dirs,
                 cancel_check=_is_cancelled,
             )
+            # Signal thinking completion
+            if runner == "copilot":
+                _on_thinking_completed()
             # Re-check: task may have been cancelled during streaming
             _fresh_task = STORE.get_task(task_id)
             if _fresh_task and _fresh_task.get("status") == "cancelled":

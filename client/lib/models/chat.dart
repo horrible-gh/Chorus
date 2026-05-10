@@ -140,6 +140,9 @@ class ChatMessage {
     this.sourceTaskId,
     this.contextUsage,
     this.isStreaming = false,
+    this.thinkingContent = '',
+    this.isThinkingStreaming = false,
+    this.isThinkingExpanded = false,
   });
 
   final String messageId;
@@ -159,13 +162,25 @@ class ChatMessage {
   final bool isCancelled;
   /// True while this is a temporary in-progress streaming message (not yet persisted in DB).
   final bool isStreaming;
+  /// Claude reasoning/thinking content during response generation.
+  final String thinkingContent;
+  /// True while thinking is streaming (incomplete).
+  final bool isThinkingStreaming;
+  /// True when thinking section is expanded; auto-collapses when thinking_completed.
+  final bool isThinkingExpanded;
 
   bool get isFromUser => senderType == 'user';
   bool get isFromAgent => senderType == 'agent';
   bool get isWhisper => visibility == 'whisper';
   bool get isOneShot => deliveryMode == 'one_shot';
 
-  ChatMessage copyWith({String? text, bool? isStreaming}) {
+  ChatMessage copyWith({
+    String? text,
+    bool? isStreaming,
+    String? thinkingContent,
+    bool? isThinkingStreaming,
+    bool? isThinkingExpanded,
+  }) {
     return ChatMessage(
       messageId: messageId,
       roomId: roomId,
@@ -183,6 +198,9 @@ class ChatMessage {
       isCancelled: isCancelled,
       contextUsage: contextUsage,
       isStreaming: isStreaming ?? this.isStreaming,
+      thinkingContent: thinkingContent ?? this.thinkingContent,
+      isThinkingStreaming: isThinkingStreaming ?? this.isThinkingStreaming,
+      isThinkingExpanded: isThinkingExpanded ?? this.isThinkingExpanded,
     );
   }
 

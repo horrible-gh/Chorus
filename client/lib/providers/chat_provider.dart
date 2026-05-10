@@ -34,6 +34,12 @@ class ChatProvider extends ChangeNotifier {
     _pushService.onMessageDelta = (taskId, roomId, delta, agentId) {
       _onPushMessageDelta(taskId, roomId, delta, agentId);
     };
+    _pushService.onThinkingDelta = (taskId, roomId, delta) {
+      _onPushThinkingDelta(taskId, roomId, delta);
+    };
+    _pushService.onThinkingCompleted = (taskId, roomId) {
+      _onPushThinkingCompleted(taskId, roomId);
+    };
   }
 
   final ChatService _service;
@@ -60,6 +66,8 @@ class ChatProvider extends ChangeNotifier {
   bool _cancelDebounceActive = false;
   /// Accumulates streaming delta text per task_id while message_delta events arrive.
   final Map<String, String> _streamingMessages = {};
+  /// Accumulates thinking content per task_id while thinking_delta events arrive.
+  final Map<String, String> _streamingThinking = {};
 
   List<ChatRoom> get rooms => _rooms;
   List<AgentPreset> get agents => _agents;
@@ -871,7 +879,57 @@ class ChatProvider extends ChangeNotifier {
     return [...serverMessages, ...streamingToKeep];
   }
 
-  Future<void> _onPushMessageCompleted(String roomId) async {
+  void _onPushThinkingDelta(String taskId, String roomId, String delta) {
+    if (roomId != _selectedRoomId) return;
+    if (_generationState == GenerationState.cancelRequested ||
+        _generationState == GenerationState.cancelled) {
+      return;
+    }
+    
+    _streamingThinking[taskId] = (_streamingThinking[taskId] ?? '') + delta;
+    
+    // Find and update the streaming bubble with thinking content
+    final idx = _messages.indexWhere(
+      (m) => m.isStreaming && m.sourceTaskId == taskId,
+    );
+    if (idx >= 0) {
+      final updated = _messages[idx].copyWith(
+        thinkingContent: _streamingThinking[taskId]!,
+        isThinkingStreaming: true,
+        isThinkingExpanded: true,
+      );
+      _messages = [
+        ..._messages.sublist(0, idx),
+        updated,
+        ..._messages.sublist(idx + 1),
+      ];
+      notifyListeners();
+    }
+  }
+
+  void _onPushThinkingCompleted(String taskId, String roomId) {
+    if (roomId != _selectedRoomId) return;
+    
+    // Find and update the message, marking thinking as complete and collapsed
+    final idx = _messages.indexWhere(
+      (m) => m.isStreaming && m.sourceTaskId == taskId,
+    );
+    if (idx >= 0) {
+      final updated = _messages[idx].copyWith(
+        isThinkingStreaming: false,
+        isThinkingExpanded: false,
+      );
+      _messages = [
+        ..._messages.sublist(0, idx),
+        updated,
+        ..._messages.sublist(idx + 1),
+      ];
+      notifyListeners();
+    }
+  }
+
+  Future<void> _onPushMessageCompleted
+    Future<void> _onPushMessageCompleted(String roomId) async {
     if (roomId != _selectedRoomId) {
       _pushService.notifyRefreshComplete();
       return;
@@ -892,6 +950,7 @@ class ChatProvider extends ChangeNotifier {
           .whereType<String>()
           .toSet();
       _streamingMessages.removeWhere((k, _) => serverTaskIds.contains(k));
+      _streamingThinking.removeWhere((k, _) => serverTaskIds.contains(k));
       _messages = _mergeWithStreaming(messages);
       _recalculatePending(messages);
       notifyListeners();

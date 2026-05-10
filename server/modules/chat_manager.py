@@ -1421,6 +1421,7 @@ def _call_ai_streaming(
     history: List[dict],
     user_text: str,
     on_chunk: "Optional[callable]" = None,
+    on_thinking_chunk: "Optional[callable]" = None,
     cancel_check: "Optional[callable]" = None,
     pinned_context: Optional[str] = None,
     provider_token_id: Optional[str] = None,
@@ -1545,6 +1546,14 @@ def _call_ai_streaming(
                 if delta:
                     stdout_lines.append(delta)
 
+            elif event_type == "assistant.reasoning_delta":
+                thinking_delta = data.get("delta", "")
+                if thinking_delta and on_thinking_chunk:
+                    try:
+                        on_thinking_chunk(thinking_delta)
+                    except Exception as _e:
+                        logger.warning(f"[_call_ai_streaming] copilot on_thinking_chunk error: {_e}")
+
             elif event_type == "assistant.message":
                 # Full message event: use as authoritative fallback if no deltas arrived.
                 # Both Claude and GPT emit this event before assistant.turn_end.
@@ -1569,8 +1578,8 @@ def _call_ai_streaming(
                 logger.warning(f"[_call_ai_streaming] copilot event error: {event}")
                 break
 
-            # skip: session.*, user.message, assistant.reasoning_delta,
-            #        assistant.reasoning, assistant.message_start, assistant.turn_start,
+            # skip: session.*, user.message, assistant.reasoning,
+            #        assistant.message_start, assistant.turn_start,
             #        assistant.tool_call, tool.*, user.tool_result
 
         # wait for process
