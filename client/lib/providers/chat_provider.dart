@@ -928,8 +928,7 @@ class ChatProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> _onPushMessageCompleted
-    Future<void> _onPushMessageCompleted(String roomId) async {
+  Future<void> _onPushMessageCompleted(String roomId) async {
     if (roomId != _selectedRoomId) {
       _pushService.notifyRefreshComplete();
       return;

@@ -1273,9 +1273,9 @@ class _MessageBubbleState extends State<_MessageBubble> {
   }
 
   void _showContextMenu(BuildContext context, Offset position) {
-    final isPinned = this.isPinned;
-    final onPinRequested = this.onPinRequested;
-    final onUnpinRequested = this.onUnpinRequested;
+    final isPinned = widget.isPinned;
+    final onPinRequested = widget.onPinRequested;
+    final onUnpinRequested = widget.onUnpinRequested;
     showMenu<void>(
       context: context,
       position: RelativeRect.fromLTRB(
