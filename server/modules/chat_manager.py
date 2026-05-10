@@ -1457,11 +1457,11 @@ def _call_ai_streaming(
             npm_loader = os.path.join(npm_basedir, "node_modules", "@github", "copilot", "npm-loader.js")
             node_exe = shutil.which("node")
             if node_exe and os.path.exists(npm_loader):
-                _cmd = [node_exe, npm_loader, "--allow-all", "--model", model, "--output-format=json", "-p", "-"]
+                _cmd = [node_exe, npm_loader, "--allow-all", "--model", model, "--output-format=json"]
             else:
-                _cmd = ["cmd", "/c", executable, "--allow-all", "--model", model, "--output-format=json", "-p", "-"]
+                _cmd = ["cmd", "/c", executable, "--allow-all", "--model", model, "--output-format=json"]
         else:
-            _cmd = [executable, "--allow-all", "--model", model, "--output-format=json", "-p", "-"]
+            _cmd = [executable, "--allow-all", "--model", model, "--output-format=json"]
         proc = subprocess.Popen(
             _cmd,
             stdin=subprocess.PIPE,
@@ -1547,7 +1547,7 @@ def _call_ai_streaming(
                     stdout_lines.append(delta)
 
             elif event_type == "assistant.reasoning_delta":
-                thinking_delta = data.get("delta", "")
+                thinking_delta = data.get("deltaContent", "")
                 if thinking_delta and on_thinking_chunk:
                     try:
                         on_thinking_chunk(thinking_delta)
