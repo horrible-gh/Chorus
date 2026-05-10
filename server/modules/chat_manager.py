@@ -1886,19 +1886,19 @@ def _call_ai_sync(
             f"[_call_ai_sync] copilot executable resolve: "
             f"shutil.which('copilot')={shutil.which('copilot')!r}, selected={executable!r}"
         )
-        safe_prompt = prompt.replace('\r\n', '\n').replace('\n', ' ')
         if executable.upper().endswith((".CMD", ".BAT")):
             npm_basedir = os.path.dirname(executable)
             npm_loader = os.path.join(npm_basedir, "node_modules", "@github", "copilot", "npm-loader.js")
             node_exe = shutil.which("node")
             if node_exe and os.path.exists(npm_loader):
-                _copilot_cmd = [node_exe, npm_loader, "--allow-all", "--model", model, "-p", safe_prompt]
+                _copilot_cmd = [node_exe, npm_loader, "--allow-all", "--model", model]
             else:
-                _copilot_cmd = ["cmd", "/c", executable, "--allow-all", "--model", model, "-p", safe_prompt]
+                _copilot_cmd = ["cmd", "/c", executable, "--allow-all", "--model", model]
         else:
-            _copilot_cmd = [executable, "--allow-all", "--model", model, "-p", safe_prompt]
+            _copilot_cmd = [executable, "--allow-all", "--model", model]
         result = subprocess.run(
             _copilot_cmd,
+            input=prompt,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -1909,7 +1909,7 @@ def _call_ai_sync(
         )
         logger.debug(f"[_call_ai_sync] copilot result: RC={result.returncode}, stdout_len={len(result.stdout) if result.stdout else 0}, stderr_snippet={(result.stderr or '')[:200]!r}")
         output = _strip_ansi_text(result.stdout)
-        # Copilot CLI does not expose machine-readable usage in -p mode (NR028 §2.3).
+        # Copilot CLI does not expose machine-readable usage in stdin mode (NR028 §2.3).
         # context_usage retains the server-side estimate only.
 
     elif runner == "claude":
