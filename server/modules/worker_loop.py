@@ -331,7 +331,7 @@ def complete_task(task_id: str, payload: dict) -> tuple[dict, dict]:
             try:
                 msg = persist_agent_response_message(task, result_json)
                 if msg is None:
-                    logger.error(f"[complete_task] persist_agent_response_message returned None for task {task_id!r}; publishing message_completed anyway")
+                    logger.warning(f"[complete_task] persist_agent_response_message returned None for task {task_id!r}; publishing message_completed anyway")
             except Exception as e:
                 logger.error(f"[complete_task] persist_agent_response_message raised an exception for task {task_id}: {e}")
             _publish_message_completed(task_id, task)

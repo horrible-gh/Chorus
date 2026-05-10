@@ -1456,13 +1456,14 @@ def _call_ai_streaming(
             npm_loader = os.path.join(npm_basedir, "node_modules", "@github", "copilot", "npm-loader.js")
             node_exe = shutil.which("node")
             if node_exe and os.path.exists(npm_loader):
-                _cmd = [node_exe, npm_loader, "--allow-all", "--model", model, "--output-format=json", "-p", prompt]
+                _cmd = [node_exe, npm_loader, "--allow-all", "--model", model, "--output-format=json", "-p", "-"]
             else:
-                _cmd = ["cmd", "/c", executable, "--allow-all", "--model", model, "--output-format=json", "-p", prompt]
+                _cmd = ["cmd", "/c", executable, "--allow-all", "--model", model, "--output-format=json", "-p", "-"]
         else:
-            _cmd = [executable, "--allow-all", "--model", model, "--output-format=json", "-p", prompt]
+            _cmd = [executable, "--allow-all", "--model", model, "--output-format=json", "-p", "-"]
         proc = subprocess.Popen(
             _cmd,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -1472,6 +1473,9 @@ def _call_ai_streaming(
             cwd=PROJECT_ROOT,
             env=env,
         )
+        # Pass prompt via stdin to avoid OS command-line length limits (T108).
+        proc.stdin.write(prompt)
+        proc.stdin.close()
 
         stdout_lines = []
         _out_queue: "queue.Queue[Optional[str]]" = queue.Queue()
@@ -1525,7 +1529,7 @@ def _call_ai_streaming(
                     try:
                         on_chunk(stripped)
                     except Exception as _e:
-                        logger.warning("[_call_ai_streaming] copilot on_chunk error: %s", _e)
+                        logger.warning(f"[_call_ai_streaming] copilot on_chunk error: {_e}")
                 continue
 
             event_type = event.get("type", "")
@@ -1537,7 +1541,7 @@ def _call_ai_streaming(
                     try:
                         on_chunk(delta)
                     except Exception as _e:
-                        logger.warning("[_call_ai_streaming] copilot on_chunk error: %s", _e)
+                        logger.warning(f"[_call_ai_streaming] copilot on_chunk error: {_e}")
                 if delta:
                     stdout_lines.append(delta)
 
@@ -1551,7 +1555,7 @@ def _call_ai_streaming(
                         try:
                             on_chunk(_full_content)
                         except Exception as _e:
-                            logger.warning("[_call_ai_streaming] copilot on_chunk error: %s", _e)
+                            logger.warning(f"[_call_ai_streaming] copilot on_chunk error: {_e}")
 
             elif event_type == "assistant.turn_end":
                 # Explicit completion signal for all copilot-runner models (Claude and GPT alike).
@@ -1562,7 +1566,7 @@ def _call_ai_streaming(
                 # result is the last event; loop will exit on next iteration (None sentinel)
 
             elif event_type in ("abort", "exception", "error"):
-                logger.warning("[_call_ai_streaming] copilot event error: %s", event)
+                logger.warning(f"[_call_ai_streaming] copilot event error: {event}")
                 break
 
             # skip: session.*, user.message, assistant.reasoning_delta,
@@ -1586,8 +1590,7 @@ def _call_ai_streaming(
         result_stdout = "".join(stdout_lines)
         if not result_stdout:
             logger.warning(
-                "[_call_ai_streaming] copilot: empty response for model=%s returncode=%s stderr=%s",
-                model, result_returncode, (stderr_text or "")[:200],
+                f"[_call_ai_streaming] copilot: empty response for model={model} returncode={result_returncode} stderr={(stderr_text or '')[:200]}"
             )
         context_usage = {}
         return result_stdout, context_usage
